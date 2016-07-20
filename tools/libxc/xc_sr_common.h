@@ -198,6 +198,9 @@ struct xc_sr_context
             /* Further debugging information in the stream. */
             bool debug;
 
+            /* This is a demand-migration stream. */
+            bool demand;
+
             /* Parameters for tweaking live migration. */
             unsigned max_iterations;
             unsigned dirty_threshold;

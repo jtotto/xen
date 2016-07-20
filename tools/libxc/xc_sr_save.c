@@ -21,6 +21,7 @@ static int write_headers(struct xc_sr_context *ctx, uint16_t guest_type)
         {
             .type       = guest_type,
             .page_shift = XC_PAGE_SHIFT,
+            .flags      = ctx->save.demand ? DHDR_FLAG_DEMAND : 0,
             .xen_major  = (xen_version >> 16) & 0xffff,
             .xen_minor  = (xen_version)       & 0xffff,
         };
@@ -138,31 +139,9 @@ static int write_batch(struct xc_sr_context *ctx)
     }
     rc = -1;
 
-    for ( i = 0; i < nr_pfns; ++i )
+    if ( !ctx->save.demand )
     {
-        switch ( types[i] )
-        {
-        case XEN_DOMCTL_PFINFO_BROKEN:
-        case XEN_DOMCTL_PFINFO_XALLOC:
-        case XEN_DOMCTL_PFINFO_XTAB:
-            continue;
-        }
-
-        mfns[nr_pages++] = mfns[i];
-    }
-
-    if ( nr_pages > 0 )
-    {
-        guest_mapping = xenforeignmemory_map(xch->fmem,
-            ctx->domid, PROT_READ, nr_pages, mfns, errors);
-        if ( !guest_mapping )
-        {
-            PERROR("Failed to map guest pages");
-            goto err;
-        }
-        nr_pages_mapped = nr_pages;
-
-        for ( i = 0, p = 0; i < nr_pfns; ++i )
+        for ( i = 0; i < nr_pfns; ++i )
         {
             switch ( types[i] )
             {
@@ -172,36 +151,61 @@ static int write_batch(struct xc_sr_context *ctx)
                 continue;
             }
 
-            if ( errors[p] )
+            mfns[nr_pages++] = mfns[i];
+        }
+
+        if ( nr_pages > 0 )
+        {
+            guest_mapping = xenforeignmemory_map(xch->fmem,
+                ctx->domid, PROT_READ, nr_pages, mfns, errors);
+            if ( !guest_mapping )
             {
-                ERROR("Mapping of pfn %#"PRIpfn" (mfn %#"PRIpfn") failed %d",
-                      ctx->save.batch_pfns[i], mfns[p], errors[p]);
+                PERROR("Failed to map guest pages");
                 goto err;
             }
+            nr_pages_mapped = nr_pages;
 
-            orig_page = page = guest_mapping + (p * PAGE_SIZE);
-            rc = ctx->save.ops.normalise_page(ctx, types[i], &page);
-
-            if ( orig_page != page )
-                local_pages[i] = page;
-
-            if ( rc )
+            for ( i = 0, p = 0; i < nr_pfns; ++i )
             {
-                if ( rc == -1 && errno == EAGAIN )
+                switch ( types[i] )
                 {
-                    set_bit(ctx->save.batch_pfns[i], ctx->save.deferred_pages);
-                    ++ctx->save.nr_deferred_pages;
-                    types[i] = XEN_DOMCTL_PFINFO_XTAB;
-                    --nr_pages;
+                case XEN_DOMCTL_PFINFO_BROKEN:
+                case XEN_DOMCTL_PFINFO_XALLOC:
+                case XEN_DOMCTL_PFINFO_XTAB:
+                    continue;
+                }
+
+                if ( errors[p] )
+                {
+                    ERROR("Mapping of pfn %#"PRIpfn" (mfn %#"PRIpfn") failed %d",
+                          ctx->save.batch_pfns[i], mfns[p], errors[p]);
+                    goto err;
+                }
+
+                orig_page = page = guest_mapping + (p * PAGE_SIZE);
+                rc = ctx->save.ops.normalise_page(ctx, types[i], &page);
+
+                if ( orig_page != page )
+                    local_pages[i] = page;
+
+                if ( rc )
+                {
+                    if ( rc == -1 && errno == EAGAIN )
+                    {
+                        set_bit(ctx->save.batch_pfns[i], ctx->save.deferred_pages);
+                        ++ctx->save.nr_deferred_pages;
+                        types[i] = XEN_DOMCTL_PFINFO_XTAB;
+                        --nr_pages;
+                    }
+                    else
+                        goto err;
                 }
                 else
-                    goto err;
-            }
-            else
-                guest_data[i] = page;
+                    guest_data[i] = page;
 
-            rc = -1;
-            ++p;
+                rc = -1;
+                ++p;
+            }
         }
     }
 
@@ -818,7 +822,7 @@ static int save(struct xc_sr_context *ctx, uint16_t guest_type)
         if ( rc )
             goto err;
 
-        if ( ctx->save.live )
+        if ( ctx->save.live && !ctx->save.demand )
             rc = send_domain_memory_live(ctx);
         else if ( ctx->save.checkpointed != XC_MIG_STREAM_NONE )
             rc = send_domain_memory_checkpointed(ctx);
@@ -930,6 +934,7 @@ int xc_domain_save(xc_interface *xch, int io_fd, uint32_t dom,
     ctx.save.callbacks = callbacks;
     ctx.save.live  = !!(flags & XCFLAGS_LIVE);
     ctx.save.debug = !!(flags & XCFLAGS_DEBUG);
+    ctx.save.demand = !!(flags & XCFLAGS_DEMAND);
     ctx.save.checkpointed = stream_type;
     ctx.save.recv_fd = recv_fd;
 

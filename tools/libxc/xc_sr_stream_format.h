@@ -36,7 +36,7 @@ struct xc_sr_dhdr
 {
     uint32_t type;
     uint16_t page_shift;
-    uint16_t _res1;
+    uint16_t flags;
     uint32_t xen_major;
     uint32_t xen_minor;
 };
@@ -45,6 +45,8 @@ struct xc_sr_dhdr
 #define DHDR_TYPE_X86_HVM 0x00000002U
 #define DHDR_TYPE_X86_PVH 0x00000003U
 #define DHDR_TYPE_ARM     0x00000004U
+
+#define DHDR_FLAG_DEMAND  0x00000001U
 
 /*
  * Record Header
