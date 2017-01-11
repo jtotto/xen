@@ -1,6 +1,8 @@
 #include <assert.h>
 #include <arpa/inet.h>
 
+#include <stdio.h>
+
 #include "xc_sr_common.h"
 
 /*
@@ -139,9 +141,31 @@ static int write_batch(struct xc_sr_context *ctx)
     }
     rc = -1;
 
-    if ( !ctx->save.demand )
+    for ( i = 0; i < nr_pfns; ++i )
     {
-        for ( i = 0; i < nr_pfns; ++i )
+        switch ( types[i] )
+        {
+        case XEN_DOMCTL_PFINFO_BROKEN:
+        case XEN_DOMCTL_PFINFO_XALLOC:
+        case XEN_DOMCTL_PFINFO_XTAB:
+            continue;
+        }
+
+        mfns[nr_pages++] = mfns[i];
+    }
+
+    if ( nr_pages > 0 )
+    {
+        guest_mapping = xenforeignmemory_map(xch->fmem,
+            ctx->domid, PROT_READ, nr_pages, mfns, errors);
+        if ( !guest_mapping )
+        {
+            PERROR("Failed to map guest pages");
+            goto err;
+        }
+        nr_pages_mapped = nr_pages;
+
+        for ( i = 0, p = 0; i < nr_pfns; ++i )
         {
             switch ( types[i] )
             {
@@ -151,61 +175,45 @@ static int write_batch(struct xc_sr_context *ctx)
                 continue;
             }
 
-            mfns[nr_pages++] = mfns[i];
-        }
-
-        if ( nr_pages > 0 )
-        {
-            guest_mapping = xenforeignmemory_map(xch->fmem,
-                ctx->domid, PROT_READ, nr_pages, mfns, errors);
-            if ( !guest_mapping )
+            if ( errors[p] )
             {
-                PERROR("Failed to map guest pages");
+                ERROR("Mapping of pfn %#"PRIpfn" (mfn %#"PRIpfn") failed %d",
+                      ctx->save.batch_pfns[i], mfns[p], errors[p]);
                 goto err;
             }
-            nr_pages_mapped = nr_pages;
 
-            for ( i = 0, p = 0; i < nr_pfns; ++i )
+            orig_page = page = guest_mapping + (p * PAGE_SIZE);
+            rc = ctx->save.ops.normalise_page(ctx, types[i], &page);
+
+            if ( orig_page != page )
+                local_pages[i] = page;
+
+            if ( rc )
             {
-                switch ( types[i] )
+                if ( rc == -1 && errno == EAGAIN )
                 {
-                case XEN_DOMCTL_PFINFO_BROKEN:
-                case XEN_DOMCTL_PFINFO_XALLOC:
-                case XEN_DOMCTL_PFINFO_XTAB:
-                    continue;
-                }
-
-                if ( errors[p] )
-                {
-                    ERROR("Mapping of pfn %#"PRIpfn" (mfn %#"PRIpfn") failed %d",
-                          ctx->save.batch_pfns[i], mfns[p], errors[p]);
-                    goto err;
-                }
-
-                orig_page = page = guest_mapping + (p * PAGE_SIZE);
-                rc = ctx->save.ops.normalise_page(ctx, types[i], &page);
-
-                if ( orig_page != page )
-                    local_pages[i] = page;
-
-                if ( rc )
-                {
-                    if ( rc == -1 && errno == EAGAIN )
-                    {
-                        set_bit(ctx->save.batch_pfns[i], ctx->save.deferred_pages);
-                        ++ctx->save.nr_deferred_pages;
-                        types[i] = XEN_DOMCTL_PFINFO_XTAB;
-                        --nr_pages;
-                    }
-                    else
-                        goto err;
+                    set_bit(ctx->save.batch_pfns[i], ctx->save.deferred_pages);
+                    ++ctx->save.nr_deferred_pages;
+                    types[i] = XEN_DOMCTL_PFINFO_XTAB;
+                    --nr_pages;
                 }
                 else
-                    guest_data[i] = page;
-
-                rc = -1;
-                ++p;
+                    goto err;
             }
+            else
+            {
+                fwrite(&ctx->save.batch_pfns[i],
+                       sizeof(ctx->save.batch_pfns[i]),
+                       1,
+                       ctx->save.raw);
+                fwrite(page,
+                       PAGE_SIZE,
+                       1,
+                       ctx->save.raw);
+            }
+
+            rc = -1;
+            ++p;
         }
     }
 
@@ -218,6 +226,9 @@ static int write_batch(struct xc_sr_context *ctx)
     }
 
     hdr.count = nr_pfns;
+
+    if ( ctx->save.demand )
+        nr_pages = 0;
 
     rec.length = sizeof(hdr);
     rec.length += nr_pfns * sizeof(*rec_pfns);
@@ -786,6 +797,8 @@ static void cleanup(struct xc_sr_context *ctx)
                                    NRPAGES(bitmap_size(ctx->save.p2m_size)));
     free(ctx->save.deferred_pages);
     free(ctx->save.batch_pfns);
+
+    fclose(ctx->save.raw);
 }
 
 /*
@@ -934,7 +947,13 @@ int xc_domain_save(xc_interface *xch, int io_fd, uint32_t dom,
     ctx.save.callbacks = callbacks;
     ctx.save.live  = !!(flags & XCFLAGS_LIVE);
     ctx.save.debug = !!(flags & XCFLAGS_DEBUG);
+#if REAL_TALK
     ctx.save.demand = !!(flags & XCFLAGS_DEMAND);
+#else
+    ctx.save.demand = true;
+    ctx.save.raw = fopen("raw.dat", "w");
+    assert(ctx.save.raw);
+#endif
     ctx.save.checkpointed = stream_type;
     ctx.save.recv_fd = recv_fd;
 

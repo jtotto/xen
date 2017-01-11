@@ -56,6 +56,8 @@ static int read_headers(struct xc_sr_context *ctx)
     ctx->restore.guest_type = dhdr.type;
     ctx->restore.guest_page_size = (1U << dhdr.page_shift);
 
+    ctx->restore.demand = !!(dhdr.flags & DHDR_FLAG_DEMAND);
+
     if ( dhdr.xen_major == 0 )
     {
         IPRINTF("Found %s domain, converted from legacy stream format",
@@ -252,7 +254,7 @@ static int process_page_data(struct xc_sr_context *ctx, unsigned count,
     }
 
     /* Nothing to do? */
-    if ( nr_pages == 0 )
+    if ( nr_pages == 0 || ctx->restore.demand )
         goto done;
 
     mapping = guest_page = xenforeignmemory_map(xch->fmem,
@@ -392,9 +394,18 @@ static int handle_page_data(struct xc_sr_context *ctx, struct xc_sr_record *rec)
         types[i] = type;
     }
 
-    if ( rec->length != (sizeof(*pages) +
-                         (sizeof(uint64_t) * pages->count) +
-                         (PAGE_SIZE * pages_of_data)) )
+    if ( ctx->restore.demand &&
+         rec->length != (sizeof(*pages) + (sizeof(uint64_t) * pages->count)) )
+    {
+        ERROR("PAGE_DATA record wrong size: length %u, expected "
+              "%zu + %zu", rec->length, sizeof(*pages),
+              (sizeof(uint64_t) * pages->count));
+        goto err;
+    }
+    else if ( !ctx->restore.demand &&
+              rec->length != (sizeof(*pages) +
+                              (sizeof(uint64_t) * pages->count) +
+                              (PAGE_SIZE * pages_of_data)) )
     {
         ERROR("PAGE_DATA record wrong size: length %u, expected "
               "%zu + %zu + %lu", rec->length, sizeof(*pages),

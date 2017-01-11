@@ -3,6 +3,8 @@
 
 #include <stdbool.h>
 
+#include <stdio.h>
+
 #include "xg_private.h"
 #include "xg_save_restore.h"
 #include "xc_dom.h"
@@ -212,6 +214,8 @@ struct xc_sr_context
             unsigned long *deferred_pages;
             unsigned long nr_deferred_pages;
             xc_hypercall_buffer_t dirty_bitmap_hbuf;
+
+            FILE *raw;
         } save;
 
         struct /* Restore data. */
@@ -232,6 +236,9 @@ struct xc_sr_context
 
             /* Plain VM, or checkpoints over time. */
             int checkpointed;
+
+            /* This is a demand-migration stream. */
+            bool demand;
 
             /* Currently buffering records between a checkpoint */
             bool buffer_all_records;
