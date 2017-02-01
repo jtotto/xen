@@ -66,6 +66,20 @@ static int write_checkpoint_record(struct xc_sr_context *ctx)
     return write_record(ctx, &checkpoint);
 }
 
+static int get_pfn_info(struct xc_sr_context *ctx, xen_pfn_t *pfns,
+                        xen_pfn_t *mfns_out, xen_pfn_t *types_out,
+                        unsigned nr_pfns)
+{
+    unsigned i;
+
+    for ( i = 0; i < nr_pfns; ++i )
+    {
+        types_out[i] = mfns_out[i] = ctx->save.ops.pfn_to_gfn(ctx, pfns[i]);
+    }
+
+    return xc_get_pfn_type_batch(ctx->xch, ctx->domid, nr_pfns, types_out);
+}
+
 /*
  * Writes a batch of memory as a PAGE_DATA record into the stream.  The batch
  * is constructed in ctx->save.batch_pfns.
@@ -117,11 +131,17 @@ static int write_batch(struct xc_sr_context *ctx)
         goto err;
     }
 
-    for ( i = 0; i < nr_pfns; ++i )
+    rc = get_pfn_info(ctx, ctx->save.batch_pfns, mfns, types,
+                      ctx->save.nr_batch_pfns);
+    if ( rc )
     {
-        types[i] = mfns[i] = ctx->save.ops.pfn_to_gfn(ctx,
-                                                      ctx->save.batch_pfns[i]);
+        PERROR("Failed to get types for pfn batch");
+        goto err;
+    }
+    rc = -1;
 
+    for ( i = 0; i < ctx->save.nr_batch_pfns; ++i )
+    {
         /* Likely a ballooned page. */
         if ( mfns[i] == INVALID_MFN )
         {
@@ -129,14 +149,6 @@ static int write_batch(struct xc_sr_context *ctx)
             ++ctx->save.nr_deferred_pages;
         }
     }
-
-    rc = xc_get_pfn_type_batch(xch, ctx->domid, nr_pfns, types);
-    if ( rc )
-    {
-        PERROR("Failed to get types for pfn batch");
-        goto err;
-    }
-    rc = -1;
 
     for ( i = 0; i < nr_pfns; ++i )
     {
