@@ -576,7 +576,7 @@ static int handle_checkpoint(struct xc_sr_context *ctx)
                                                 ctx->restore.callbacks->data);
 
         /* Resume secondary vm */
-        ret = ctx->restore.callbacks->postcopy(ctx->restore.callbacks->data);
+        ret = ctx->restore.callbacks->aftercopy(ctx->restore.callbacks->data);
         HANDLE_CALLBACK_RETURN_VALUE(ret);
 
         /* Wait for a new checkpoint */
@@ -855,7 +855,7 @@ int xc_domain_restore(xc_interface *xch, int io_fd, uint32_t dom,
     {
         /* this is COLO restore */
         assert(callbacks->suspend &&
-               callbacks->postcopy &&
+               callbacks->aftercopy &&
                callbacks->wait_checkpoint &&
                callbacks->restore_results);
     }
