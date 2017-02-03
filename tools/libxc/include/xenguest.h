@@ -53,7 +53,7 @@ struct save_callbacks {
      * xc_domain_save then flushes the output buffer, while the
      *  guest continues to run.
      */
-    int (*postcopy)(void* data);
+    int (*aftercopy)(void* data);
 
     /* Called after the memory checkpoint has been flushed
      * out into the network. Typical actions performed in this
@@ -115,7 +115,7 @@ struct restore_callbacks {
      * Callback function resumes the guest & the device model,
      * returns to xc_domain_restore.
      */
-    int (*postcopy)(void* data);
+    int (*aftercopy)(void* data);
 
     /* A checkpoint record has been found in the stream.
      * returns: */
