@@ -246,7 +246,7 @@ void libxl__colo_restore_setup(libxl__egc *egc,
     if (init_dsps(&crcs->dsps))
         goto out;
 
-    callbacks->postcopy = libxl__colo_restore_domain_resume_callback;
+    callbacks->aftercopy = libxl__colo_restore_domain_resume_callback;
     callbacks->wait_checkpoint = libxl__colo_restore_domain_wait_checkpoint_callback;
     callbacks->suspend = libxl__colo_restore_domain_suspend_callback;
     callbacks->checkpoint = libxl__colo_restore_domain_checkpoint_callback;
