@@ -131,7 +131,7 @@ void libxl__colo_save_setup(libxl__egc *egc, libxl__colo_save_state *css)
 
     callbacks->suspend = libxl__colo_save_domain_suspend_callback;
     callbacks->checkpoint = libxl__colo_save_domain_checkpoint_callback;
-    callbacks->postcopy = libxl__colo_save_domain_resume_callback;
+    callbacks->aftercopy = libxl__colo_save_domain_resume_callback;
     callbacks->wait_checkpoint = libxl__colo_save_domain_wait_checkpoint_callback;
 
     libxl__checkpoint_devices_setup(egc, &dss->cds);

@@ -110,7 +110,7 @@ void libxl__remus_setup(libxl__egc *egc, libxl__remus_state *rs)
     dss->sws.checkpoint_callback = remus_checkpoint_stream_written;
 
     callbacks->suspend = libxl__remus_domain_suspend_callback;
-    callbacks->postcopy = libxl__remus_domain_resume_callback;
+    callbacks->aftercopy = libxl__remus_domain_resume_callback;
     callbacks->checkpoint = libxl__remus_domain_save_checkpoint_callback;
 
     libxl__checkpoint_devices_setup(egc, cds);

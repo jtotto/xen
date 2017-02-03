@@ -875,7 +875,7 @@ static int save(struct xc_sr_context *ctx, uint16_t guest_type)
                 }
             }
 
-            rc = ctx->save.callbacks->postcopy(ctx->save.callbacks->data);
+            rc = ctx->save.callbacks->aftercopy(ctx->save.callbacks->data);
             if ( rc <= 0 )
                 goto err;
 
@@ -963,7 +963,7 @@ int xc_domain_save(xc_interface *xch, int io_fd, uint32_t dom,
     if ( hvm )
         assert(callbacks->switch_qemu_logdirty);
     if ( ctx.save.checkpointed )
-        assert(callbacks->checkpoint && callbacks->postcopy);
+        assert(callbacks->checkpoint && callbacks->aftercopy);
     if ( ctx.save.checkpointed == XC_MIG_STREAM_COLO )
         assert(callbacks->wait_checkpoint);
 
