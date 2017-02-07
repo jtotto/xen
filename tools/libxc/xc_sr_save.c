@@ -4,6 +4,16 @@
 #include "xc_sr_common.h"
 
 /*
+ * Bit 63-60: XEN_DOMCTL_PFINFO_* type (from
+ * public/domctl.h but shifted by 32 bits)
+ *
+ * Bit 59-52: Reserved.
+ *
+ * Bit 51-0: PFN.
+ */
+#define ENCODE_PFINFO(pfn, type) (((uint64_t)(type) << 32) | (pfn));
+
+/*
  * Writes an Image header and Domain header into the stream.
  */
 static int write_headers(struct xc_sr_context *ctx, uint16_t guest_type)
@@ -233,7 +243,7 @@ static int write_batch(struct xc_sr_context *ctx)
     rec.length += nr_pages * PAGE_SIZE;
 
     for ( i = 0; i < nr_pfns; ++i )
-        rec_pfns[i] = ((uint64_t)(types[i]) << 32) | ctx->save.batch_pfns[i];
+        rec_pfns[i] = ENCODE_PFINFO(ctx->save.batch_pfns[i], types[i]);
 
     iov[0].iov_base = &rec.type;
     iov[0].iov_len = sizeof(rec.type);
