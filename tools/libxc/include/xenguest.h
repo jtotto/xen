@@ -46,6 +46,14 @@ struct save_callbacks {
      */
     int (*suspend)(void* data);
 
+    /* Called periodically during a live migration save to check the migration
+     * should enter the post-copy phase.
+     *
+     * returns:
+     * 0: do not begin the postcopy phase
+     * 1: begin the postcopy phase, if appropriate */
+    int (*should_begin_postcopy)(void *data);
+
     /* Called after the guest's dirty pages have been
      *  copied into an output buffer.
      * Callback function resumes the guest & the device model,

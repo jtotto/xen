@@ -3,6 +3,20 @@
 
 #include "xc_sr_common.h"
 
+#define MAX_BATCH_SIZE max(MAX_PAGE_BATCH_SIZE, MAX_PFN_BATCH_SIZE)
+
+static const unsigned batch_sizes[] =
+{
+    [XC_SR_SAVE_BATCH_PAGE] = MAX_PAGE_BATCH_SIZE,
+    [XC_SR_SAVE_BATCH_PFN]  = MAX_PFN_BATCH_SIZE
+};
+
+static const uint32_t batch_rec_types[] =
+{
+    [XC_SR_SAVE_BATCH_PAGE] = REC_TYPE_PAGE_DATA,
+    [XC_SR_SAVE_BATCH_PFN]  = REC_TYPE_POSTCOPY_BEGIN
+};
+
 /*
  * Writes an Image header and Domain header into the stream.
  */
@@ -89,10 +103,11 @@ static int write_batch(struct xc_sr_context *ctx)
     void *page, *orig_page;
     uint64_t *rec_pfns = NULL;
     struct iovec *iov = NULL; int iovcnt = 0;
-    struct xc_sr_rec_page_data_header hdr = { 0 };
+    struct xc_sr_rec_pages_header hdr = { 0 };
+    bool send_page_contents = (ctx->save.batch_type == XC_SR_SAVE_BATCH_PAGE);
     struct xc_sr_record rec =
     {
-        .type = REC_TYPE_PAGE_DATA,
+        .type = batch_rec_types[ctx->save.batch_type],
     };
 
     assert(nr_pfns != 0);
@@ -138,17 +153,20 @@ static int write_batch(struct xc_sr_context *ctx)
     }
     rc = -1;
 
-    for ( i = 0; i < nr_pfns; ++i )
+    if ( send_page_contents )
     {
-        switch ( types[i] )
+        for ( i = 0; i < nr_pfns; ++i )
         {
-        case XEN_DOMCTL_PFINFO_BROKEN:
-        case XEN_DOMCTL_PFINFO_XALLOC:
-        case XEN_DOMCTL_PFINFO_XTAB:
-            continue;
-        }
+            switch ( types[i] )
+            {
+            case XEN_DOMCTL_PFINFO_BROKEN:
+            case XEN_DOMCTL_PFINFO_XALLOC:
+            case XEN_DOMCTL_PFINFO_XTAB:
+                continue;
+            }
 
-        mfns[nr_pages++] = mfns[i];
+            mfns[nr_pages++] = mfns[i];
+        }
     }
 
     if ( nr_pages > 0 )
@@ -299,19 +317,61 @@ static int flush_batch(struct xc_sr_context *ctx)
 }
 
 /*
- * Add a single pfn to the batch, flushing the batch if full.
+ * Test if the batch is full.
  */
-static int add_to_batch(struct xc_sr_context *ctx, xen_pfn_t pfn)
+static bool batch_full(struct xc_sr_context *ctx)
 {
-    int rc = 0;
+    return ctx->save.nr_batch_pfns == batch_maxes[ctx->save.batch_type];
+}
 
-    if ( ctx->save.nr_batch_pfns == MAX_BATCH_SIZE )
-        rc = flush_batch(ctx);
+/*
+ * Test if the batch is empty.
+ */
+static bool batch_empty(struct xc_sr_context *ctx)
+{
+    return ctx->save.nr_batch_pfns == 0;
+}
 
-    if ( rc == 0 )
-        ctx->save.batch_pfns[ctx->save.nr_batch_pfns++] = pfn;
+/*
+ * Add a single pfn to the batch.
+ */
+static void add_to_batch(struct xc_sr_context *ctx, xen_pfn_t pfn)
+{
+    assert(ctx->save.nr_batch_pfns < batch_maxes[ctx->save.batch_type]);
+    ctx->save.batch_pfns[ctx->save.nr_batch_pfns++] = pfn;
+}
 
-    return rc;
+/*
+ * XXX
+ */
+static int send_postcopy_pfns(struct xc_sr_context *ctx)
+{
+    xen_pfn_t p;
+    unsigned i;
+    unsigned nr_postcopy_pfns = ctx->save.nr_final_dirty_pages;
+    int rc;
+
+    DECLARE_HYPERCALL_BUFFER_SHADOW(unsigned long, dirty_bitmap,
+                                    &ctx->save.dirty_bitmap_hbuf);
+
+    assert(batch_empty(ctx));
+    ctx->save.batch_type = XC_SR_SAVE_BATCH_PFN;
+    for ( p = 0; ctx->save.nr_batch_pfns = 0; p < ctx->save.p2m_size; ++p )
+    {
+        if ( !test_bit(p, dirty_bitmap) )
+            continue;
+
+        if ( batch_full(ctx) )
+        {
+            rc = flush_batch(ctx);
+            if ( rc )
+                return rc;
+        }
+
+        add_to_batch(ctx, p);
+    }
+
+    return flush_batch(ctx);
 }
 
 /*
@@ -370,19 +430,38 @@ static int send_dirty_pages(struct xc_sr_context *ctx,
     DECLARE_HYPERCALL_BUFFER_SHADOW(unsigned long, dirty_bitmap,
                                     &ctx->save.dirty_bitmap_hbuf);
 
+    assert(batch_empty(ctx));
+    ctx->save.batch_type = XC_SR_SAVE_BATCH_PAGE;
     for ( p = 0, written = 0; p < ctx->save.p2m_size; ++p )
     {
         if ( !test_bit(p, dirty_bitmap) )
             continue;
 
-        rc = add_to_batch(ctx, p);
-        if ( rc )
-            return rc;
+        if ( batch_full(ctx) )
+        {
+            rc = flush_batch(ctx);
+            if ( rc )
+                return rc;
 
-        /* Update progress every 4MB worth of memory sent. */
-        if ( (written & ((1U << (22 - 12)) - 1)) == 0 )
+            /* Update progress every after every batch (4MB) of memory sent. */
             xc_report_progress_step(xch, written, entries);
 
+            rc = ctx->save.callbacks->should_begin_postcopy(
+                ctx->save.callbacks->data);
+            if ( rc )
+            {
+                ctx->save.postcopy_requested = true;
+                /* Any outstanding dirty pages are now deferred until after
+                 * entry to the postcopy phase. */
+                bitmap_or(ctx->save.deferred_pages, dirty_bitmap,
+                          ctx->save.p2m_size);
+                ctx->save.nr_deferred_pages += entries - written;
+                goto done;
+            }
+        }
+
+        add_to_batch(ctx, p);
+        clear_bit(p, dirty_bitmap);
         ++written;
     }
 
@@ -395,6 +474,7 @@ static int send_dirty_pages(struct xc_sr_context *ctx,
 
     xc_report_progress_step(xch, entries, entries);
 
+ done:
     return ctx->save.ops.check_vm_state(ctx);
 }
 
@@ -574,7 +654,7 @@ static int colo_merge_secondary_dirty_bitmap(struct xc_sr_context *ctx)
  * This is the last iteration of the live migration and the
  * heart of the checkpointed stream.
  */
-static int suspend_and_send_dirty(struct xc_sr_context *ctx)
+static int suspend_and_check_dirty(struct xc_sr_context *ctx)
 {
     xc_interface *xch = ctx->xch;
     xc_shadow_op_stats_t stats = { 0, ctx->save.p2m_size };
@@ -620,9 +700,8 @@ static int suspend_and_send_dirty(struct xc_sr_context *ctx)
         }
     }
 
-    rc = send_dirty_pages(ctx, stats.dirty_count + ctx->save.nr_deferred_pages);
-    if ( rc )
-        goto out;
+    ctx->save.nr_final_dirty_pages =
+        stats.dirty_count + ctx->save.nr_deferred_pages;
 
     bitmap_clear(ctx->save.deferred_pages, ctx->save.p2m_size);
     ctx->save.nr_deferred_pages = 0;
@@ -631,6 +710,12 @@ static int suspend_and_send_dirty(struct xc_sr_context *ctx)
     xc_set_progress_prefix(xch, NULL);
     free(progress_str);
     return rc;
+}
+
+static int suspend_and_send_dirty(struct xc_sr_context *ctx)
+{
+    return suspend_and_check_dirty(ctx) ?:
+        send_dirty_pages(ctx, ctx->save.nr_final_dirty_pages);
 }
 
 static int verify_frames(struct xc_sr_context *ctx)
@@ -687,7 +772,13 @@ static int send_domain_memory_live(struct xc_sr_context *ctx)
     if ( rc )
         goto out;
 
-    rc = suspend_and_send_dirty(ctx);
+    rc = suspend_and_check_dirty(ctx);
+    if ( rc )
+        goto out;
+
+    rc = ctx->save.postcopy_requested
+        ? send_postcopy_pfns(ctx)
+        : send_dirty_pages(ctx, ctx->save.nr_final_dirty_pages);
     if ( rc )
         goto out;
 
@@ -840,7 +931,14 @@ static int save(struct xc_sr_context *ctx, uint16_t guest_type)
         if ( rc )
             goto err;
 
-        if ( ctx->save.checkpointed != XC_MIG_STREAM_NONE )
+        if ( ctx->save.postcopy_requested )
+        {
+            /* hand things off to libxl so that it can finish the rest
+             * of the high-level migration */
+
+            /* XXX when libxl is done, we can begin the demand-migration loop */
+        }
+        else if ( ctx->save.checkpointed != XC_MIG_STREAM_NONE )
         {
             /*
              * We have now completed the initial live portion of the checkpoint

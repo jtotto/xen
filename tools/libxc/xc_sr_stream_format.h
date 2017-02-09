@@ -76,19 +76,20 @@ struct xc_sr_rhdr
 #define REC_TYPE_VERIFY                     0x0000000dU
 #define REC_TYPE_CHECKPOINT                 0x0000000eU
 #define REC_TYPE_CHECKPOINT_DIRTY_PFN_LIST  0x0000000fU
+#define REC_TYPE_POSTCOPY_PFNS              0x00000010U
 
 #define REC_TYPE_OPTIONAL             0x80000000U
 
-/* PAGE_DATA */
-struct xc_sr_rec_page_data_header
+/* PAGE_DATA/POSTCOPY_PFNS */
+struct xc_sr_rec_pages_header
 {
     uint32_t count;
     uint32_t _res1;
     uint64_t pfn[0];
 };
 
-#define PAGE_DATA_PFN_MASK  0x000fffffffffffffULL
-#define PAGE_DATA_TYPE_MASK 0xf000000000000000ULL
+#define REC_PFN_MASK  0x000fffffffffffffULL
+#define REC_TYPE_MASK 0xf000000000000000ULL
 
 /* X86_PV_INFO */
 struct xc_sr_rec_x86_pv_info

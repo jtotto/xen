@@ -24,7 +24,15 @@
 ** We process save/restore/migrate in batches of pages; the below
 ** determines how many pages we (at maximum) deal with in each batch.
 */
-#define MAX_BATCH_SIZE 1024   /* up to 1024 pages (4MB) at a time */
+#define MAX_PAGE_BATCH_SIZE 1024   /* up to 1024 pages (4MB) at a time */
+
+/*
+** We process the migration postcopy transition in batches of pfns to ensure
+** that we stay within the record size bound.  Because these records contain
+** only pfns (and _not_ their contents), we can accomodate many more of them
+** in a batch.
+*/
+#define MAX_PFN_BATCH_SIZE ((4U << 20) / sizeof(uint64_t)) /* up to 512k pfns */
 
 /* When pinning page tables at the end of restore, we also use batching. */
 #define MAX_PIN_BATCH  1024

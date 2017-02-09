@@ -192,6 +192,9 @@ struct xc_sr_context
             /* Live migrate vs non live suspend. */
             bool live;
 
+            /* Have we detected a user request to begin a postcopy migration? */
+            bool postcopy_requested;
+
             /* Plain VM, or checkpoints over time. */
             int checkpointed;
 
@@ -204,11 +207,16 @@ struct xc_sr_context
 
             unsigned long p2m_size;
 
+            enum {
+                XC_SR_SAVE_BATCH_PAGE,
+                XC_SR_SAVE_BATCH_PFN
+            } batch_type;
             xen_pfn_t *batch_pfns;
             unsigned nr_batch_pfns;
             unsigned long *deferred_pages;
             unsigned long nr_deferred_pages;
             xc_hypercall_buffer_t dirty_bitmap_hbuf;
+            unsigned long nr_final_dirty_pages;
         } save;
 
         struct /* Restore data. */
