@@ -76,16 +76,15 @@ static int write_checkpoint_record(struct xc_sr_context *ctx)
     return write_record(ctx, &checkpoint);
 }
 
-static int get_batch_info(struct xc_sr_context *ctx, xen_pfn_t *batch_pfns,
-                          xen_pfn_t *mfns_out, xen_pfn_t *types_out,
-                          unsigned nr_pfns)
+static int get_pfn_info(struct xc_sr_context *ctx, xen_pfn_t *pfns,
+                        xen_pfn_t *mfns_out, xen_pfn_t *types_out,
+                        unsigned nr_pfns)
 {
     unsigned i;
 
     for ( i = 0; i < nr_pfns; ++i )
     {
-        types_out[i] = mfns_out[i] = ctx->save.ops.pfn_to_gfn(ctx,
-                                                              batch_pfns[i]);
+        types_out[i] = mfns_out[i] = ctx->save.ops.pfn_to_gfn(ctx, pfns[i]);
     }
 
     return xc_get_pfn_type_batch(ctx->xch, ctx->domid, nr_pfns, types_out);
@@ -142,8 +141,8 @@ static int write_batch(struct xc_sr_context *ctx)
         goto err;
     }
 
-    rc = get_batch_info(ctx, ctx->save.batch_pfns, mfns, types,
-                        ctx->save.nr_batch_pfns);
+    rc = get_pfn_info(ctx, ctx->save.batch_pfns, mfns, types,
+                      ctx->save.nr_batch_pfns);
     if ( rc )
     {
         PERROR("Failed to get types for pfn batch");
