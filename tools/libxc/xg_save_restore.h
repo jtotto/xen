@@ -34,6 +34,12 @@
 */
 #define MAX_PFN_BATCH_SIZE ((4U << 20) / sizeof(uint64_t)) /* up to 512k pfns */
 
+/*
+** The postcopy background copy uses a smaller batch size to ensure it can
+** quickly respond to remote faults.
+*/
+#define MAX_POSTCOPY_BATCH_SIZE 64
+
 /* When pinning page tables at the end of restore, we also use batching. */
 #define MAX_PIN_BATCH  1024
 
