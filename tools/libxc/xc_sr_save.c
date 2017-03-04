@@ -295,28 +295,6 @@ static int write_batch(struct xc_sr_context *ctx)
 }
 
 /*
- * Flush a batch of pfns into the stream.
- */
-static int flush_batch(struct xc_sr_context *ctx)
-{
-    int rc = 0;
-
-    if ( ctx->save.nr_batch_pfns == 0 )
-        return rc;
-
-    rc = write_batch(ctx);
-
-    if ( !rc )
-    {
-        VALGRIND_MAKE_MEM_UNDEFINED(ctx->save.batch_pfns,
-                                    MAX_BATCH_SIZE *
-                                    sizeof(*ctx->save.batch_pfns));
-    }
-
-    return rc;
-}
-
-/*
  * Test if the batch is full.
  */
 static bool batch_full(struct xc_sr_context *ctx)
@@ -330,6 +308,28 @@ static bool batch_full(struct xc_sr_context *ctx)
 static bool batch_empty(struct xc_sr_context *ctx)
 {
     return ctx->save.nr_batch_pfns == 0;
+}
+
+/*
+ * Flush a batch of pfns into the stream.
+ */
+static int flush_batch(struct xc_sr_context *ctx)
+{
+    int rc = 0;
+
+    if ( batch_empty(ctx) )
+        return rc;
+
+    rc = write_batch(ctx);
+
+    if ( !rc )
+    {
+        VALGRIND_MAKE_MEM_UNDEFINED(ctx->save.batch_pfns,
+                                    MAX_BATCH_SIZE *
+                                    sizeof(*ctx->save.batch_pfns));
+    }
+
+    return rc;
 }
 
 /*
@@ -348,7 +348,6 @@ static int send_postcopy_pfns(struct xc_sr_context *ctx)
 {
     xen_pfn_t p;
     unsigned i;
-    unsigned nr_postcopy_pfns = ctx->save.nr_final_dirty_pages;
     int rc;
 
     DECLARE_HYPERCALL_BUFFER_SHADOW(unsigned long, dirty_bitmap,
@@ -356,7 +355,7 @@ static int send_postcopy_pfns(struct xc_sr_context *ctx)
 
     assert(batch_empty(ctx));
     ctx->save.batch_type = XC_SR_SAVE_BATCH_PFN;
-    for ( p = 0; ctx->save.nr_batch_pfns = 0; p < ctx->save.p2m_size; ++p )
+    for ( p = 0; p < ctx->save.p2m_size; ++p )
     {
         if ( !test_bit(p, dirty_bitmap) )
             continue;
@@ -420,62 +419,83 @@ static int suspend_domain(struct xc_sr_context *ctx)
  *
  * Bitmap is bounded by p2m_size.
  */
-static int send_dirty_pages(struct xc_sr_context *ctx,
-                            unsigned long entries)
+static int do_send_dirty_pages(struct xc_sr_context *ctx,
+                               unsigned long entries,
+                               bool precopy)
 {
     xc_interface *xch = ctx->xch;
     xen_pfn_t p;
     unsigned long written;
     int rc;
+
+    int (*should_begin_postcopy)(void *) =
+        ctx->save.callbacks->should_begin_postcopy;
+    void *cbdata = ctx->save.callbacks->data;
+
     DECLARE_HYPERCALL_BUFFER_SHADOW(unsigned long, dirty_bitmap,
                                     &ctx->save.dirty_bitmap_hbuf);
 
     assert(batch_empty(ctx));
     ctx->save.batch_type = XC_SR_SAVE_BATCH_PAGE;
-    for ( p = 0, written = 0; p < ctx->save.p2m_size; ++p )
+    for ( p = 0; p < ctx->save.p2m_size; )
     {
-        if ( !test_bit(p, dirty_bitmap) )
-            continue;
-
-        if ( batch_full(ctx) )
+        if ( ctx->save.live && precopy && should_begin_postcopy(cbdata) )
         {
-            rc = flush_batch(ctx);
-            if ( rc )
-                return rc;
+            assert(!ctx->save.postcopy_requested);
+            ctx->save.postcopy_requested = true;
 
-            /* Update progress every after every batch (4MB) of memory sent. */
-            xc_report_progress_step(xch, written, entries);
-
-            rc = ctx->save.callbacks->should_begin_postcopy(
-                ctx->save.callbacks->data);
-            if ( rc )
-            {
-                ctx->save.postcopy_requested = true;
-                /* Any outstanding dirty pages are now deferred until after
-                 * entry to the postcopy phase. */
-                bitmap_or(ctx->save.deferred_pages, dirty_bitmap,
-                          ctx->save.p2m_size);
-                ctx->save.nr_deferred_pages += entries - written;
-                goto done;
-            }
+            /* Any outstanding dirty pages are now deferred until after
+             * entry to the postcopy phase. */
+            bitmap_or(ctx->save.deferred_pages, dirty_bitmap,
+                      ctx->save.p2m_size);
+            ctx->save.nr_deferred_pages += entries - written; /* XXX */
+            goto done;
         }
 
-        add_to_batch(ctx, p);
-        clear_bit(p, dirty_bitmap);
-        ++written;
-    }
+        for ( ; p < ctx->save.p2m_size && !batch_full(ctx); ++p )
+        {
+            if ( !test_bit(p, dirty_bitmap) )
+                continue;
 
-    rc = flush_batch(ctx);
-    if ( rc )
-        return rc;
+            add_to_batch(ctx, p);
+            clear_bit(p, dirty_bitmap);
+            ++written;
+        }
+
+        rc = flush_batch(ctx);
+        if ( rc )
+            return rc;
+
+        /* Update progress every after every batch (4MB) of memory sent. */
+        xc_report_progress_step(xch, written, entries);
+    }
 
     if ( written > entries )
         DPRINTF("Bitmap contained more entries than expected...");
 
-    xc_report_progress_step(xch, entries, entries);
-
  done:
     return ctx->save.ops.check_vm_state(ctx);
+}
+
+static int send_dirty_pages(struct xc_sr_context *ctx, unsigned long entries)
+{
+    return do_send_dirty_pages(ctx, entries, /* precopy */ false);
+}
+
+static int precopy_dirty_pages(struct xc_sr_context *ctx,
+                               unsigned long entries)
+{
+    return do_send_dirty_pages(ctx, entries, /* precopy */ true);
+}
+
+static int do_send_all_pages(struct xc_sr_context *ctx, bool precopy)
+{
+    DECLARE_HYPERCALL_BUFFER_SHADOW(unsigned long, dirty_bitmap,
+                                    &ctx->save.dirty_bitmap_hbuf);
+
+    bitmap_set(dirty_bitmap, ctx->save.p2m_size);
+
+    return do_send_dirty_pages(ctx, ctx->save.p2m_size, precopy);
 }
 
 /*
@@ -484,12 +504,12 @@ static int send_dirty_pages(struct xc_sr_context *ctx,
  */
 static int send_all_pages(struct xc_sr_context *ctx)
 {
-    DECLARE_HYPERCALL_BUFFER_SHADOW(unsigned long, dirty_bitmap,
-                                    &ctx->save.dirty_bitmap_hbuf);
+    return do_send_all_pages(ctx, /* precopy */ false);
+}
 
-    bitmap_set(dirty_bitmap, ctx->save.p2m_size);
-
-    return send_dirty_pages(ctx, ctx->save.p2m_size);
+static int precopy_all_pages(struct xc_sr_context *ctx)
+{
+    return do_send_all_pages(ctx, /* precopy */ true);
 }
 
 static int enable_logdirty(struct xc_sr_context *ctx)
@@ -549,7 +569,7 @@ static int update_progress_string(struct xc_sr_context *ctx,
 /*
  * Send memory while guest is running.
  */
-static int send_memory_live(struct xc_sr_context *ctx)
+static int precopy_memory_live(struct xc_sr_context *ctx)
 {
     xc_interface *xch = ctx->xch;
     xc_shadow_op_stats_t stats = { 0, ctx->save.p2m_size };
@@ -561,7 +581,7 @@ static int send_memory_live(struct xc_sr_context *ctx)
     if ( rc )
         goto out;
 
-    rc = send_all_pages(ctx);
+    rc = precopy_all_pages(ctx);
     if ( rc )
         goto out;
 
@@ -586,7 +606,7 @@ static int send_memory_live(struct xc_sr_context *ctx)
         if ( rc )
             goto out;
 
-        rc = send_dirty_pages(ctx, stats.dirty_count);
+        rc = precopy_dirty_pages(ctx, stats.dirty_count);
         if ( rc )
             goto out;
     }
@@ -768,7 +788,7 @@ static int send_domain_memory_live(struct xc_sr_context *ctx)
     if ( rc )
         goto out;
 
-    rc = send_memory_live(ctx);
+    rc = precopy_memory_live(ctx);
     if ( rc )
         goto out;
 

@@ -1364,10 +1364,31 @@ int libxl_retrieve_domain_configuration(libxl_ctx *ctx, uint32_t domid,
 
 int libxl_domain_suspend(libxl_ctx *ctx, uint32_t domid, int fd,
                          int flags, /* LIBXL_SUSPEND_* */
+                         int recv_fd, int precopy_period,
                          const libxl_asyncop_how *ao_how)
                          LIBXL_EXTERNAL_CALLERS_ONLY;
 #define LIBXL_SUSPEND_DEBUG 1
 #define LIBXL_SUSPEND_LIVE 2
+
+#define LIBXL_SUSPEND_PRECOPY_FULL (-1)
+#define LIBXL_SUSPEND_PRECOPY_NONE 0
+#define LIBXL_SUSPEND_PRECOPY_PERIOD_MS(period) period
+
+#if defined(LIBXL_API_VERSION) && LIBXL_API_VERSION < 0x040800
+
+static inline int LIBXL_EXTERNAL_CALLERS_ONLY libxl_domain_suspend_0x040700(
+    libxl_ctx *ctx, uint32_t domid, int fd,
+    int flags, /* LIBXL_SUSPEND_* */
+    const libxl_asyncop_how *ao_how)
+{
+    return libxl_domain_suspend(ctx, domid, fd, flags,
+                                -1 /* recv_fd */, LIBXL_SUSPEND_PRECOPY_FULL,
+                                ao_how);
+}
+
+#define libxl_domain_suspend libxl_domain_suspend_0x040700
+
+#endif
 
 /* @param suspend_cancel [from xenctrl.h:xc_domain_resume( @param fast )]
  *   If this parameter is true, use co-operative resume. The guest

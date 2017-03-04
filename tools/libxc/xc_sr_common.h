@@ -407,6 +407,9 @@ int read_record(struct xc_sr_context *ctx, int fd, struct xc_sr_record *rec);
 int populate_pfns(struct xc_sr_context *ctx, unsigned count,
                   const xen_pfn_t *original_pfns, const uint32_t *types);
 
+/* XXX */
+int postcopy_clear_page(struct xc_sr_context *ctx, xen_pfn_t pfn);
+
 #endif
 /*
  * Local variables:

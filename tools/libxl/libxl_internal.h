@@ -3288,6 +3288,9 @@ struct libxl__domain_save_state {
     int fd;
     int fdfl; /* original flags on fd */
     int recv_fd;
+    int precopy_period;
+    libxl__ev_time precopy_timer;
+    bool request_postcopy;
     libxl_domain_type type;
     int live;
     int debug;

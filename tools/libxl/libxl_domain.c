@@ -487,6 +487,7 @@ static void domain_suspend_cb(libxl__egc *egc,
 }
 
 int libxl_domain_suspend(libxl_ctx *ctx, uint32_t domid, int fd, int flags,
+                         int recv_fd, int precopy_period,
                          const libxl_asyncop_how *ao_how)
 {
     AO_CREATE(ctx, domid, ao_how);
@@ -506,6 +507,8 @@ int libxl_domain_suspend(libxl_ctx *ctx, uint32_t domid, int fd, int flags,
 
     dss->domid = domid;
     dss->fd = fd;
+    dss->recv_fd = recv_fd;
+    dss->precopy_period = precopy_period;
     dss->type = type;
     dss->live = flags & LIBXL_SUSPEND_LIVE;
     dss->debug = flags & LIBXL_SUSPEND_DEBUG;

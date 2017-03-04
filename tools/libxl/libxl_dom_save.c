@@ -263,6 +263,20 @@ static void switch_logdirty_done(libxl__egc *egc,
 
 /*----- callbacks, called by xc_domain_save -----*/
 
+static void precopy_period_exceeded(libxl__egc *egc, libxl__ev_time *ev,
+                                    const struct timeval *requested_abs,
+                                    int rc)
+{
+    libxl__domain_save_state *dss = CONTAINER_OF(ev, *dss, precopy_timer);
+    dss->request_postcopy = true;
+}
+
+int libxl__domain_suspend_should_begin_postcopy(void *user)
+{
+    libxl__domain_save_state *dss = user;
+    return dss->request_postcopy;
+}
+
 /*
  * Expand the buffer 'buf' of length 'len', to append 'str' including its NUL
  * terminator.
@@ -346,6 +360,8 @@ void libxl__domain_save(libxl__egc *egc, libxl__domain_save_state *dss)
     unsigned int nr_vnodes = 0, nr_vmemranges = 0, nr_vcpus = 0;
     libxl__domain_suspend_state *dsps = &dss->dsps;
 
+    libxl__ev_time_init(&dss->precopy_timer);
+
     if (dss->checkpointed_stream != LIBXL_CHECKPOINTED_STREAM_NONE && !r_info) {
         LOGD(ERROR, domid, "Migration stream is checkpointed, but there's no "
                            "checkpoint info!");
@@ -398,9 +414,34 @@ void libxl__domain_save(libxl__egc *egc, libxl__domain_save_state *dss)
             dss->xcflags |= XCFLAGS_CHECKPOINT_COMPRESS;
     }
 
-    if (dss->checkpointed_stream == LIBXL_CHECKPOINTED_STREAM_NONE)
+    if (dss->checkpointed_stream == LIBXL_CHECKPOINTED_STREAM_NONE) {
         callbacks->suspend = libxl__domain_suspend_callback;
 
+        if (live) {
+            switch (dss->precopy_period) {
+            case LIBXL_SUSPEND_PRECOPY_FULL:
+                /* Never request a transition to the postcopy phase. */
+                dss->request_postcopy = false;
+                break;
+            case LIBXL_SUSPEND_PRECOPY_NONE:
+                /* Request a postcopy transition immediately. */
+                dss->request_postcopy = true;
+                break;
+            default:
+                /* Request a postcopy transition after exceeding the precopy period. */
+                dss->request_postcopy = false;
+                rc = libxl__ev_time_register_rel(ao, &dss->precopy_timer,
+                                                 precopy_period_exceeded,
+                                                 dss->precopy_period);
+                if (rc) goto out;
+                break;
+            }
+        }
+    } else {
+        dss->request_postcopy = false;
+    }
+
+    callbacks->should_begin_postcopy = libxl__domain_suspend_should_begin_postcopy;
     callbacks->switch_qemu_logdirty = libxl__domain_suspend_common_switch_qemu_logdirty;
 
     dss->sws.ao  = dss->ao;
@@ -431,6 +472,7 @@ static void domain_save_done(libxl__egc *egc,
     const uint32_t domid = dss->domid;
     libxl__domain_suspend_state *dsps = &dss->dsps;
 
+    libxl__ev_time_deregister(gc, &dss->precopy_timer);
     libxl__ev_evtchn_cancel(gc, &dsps->guest_evtchn);
 
     if (dsps->guest_evtchn.port > 0)
