@@ -22,6 +22,9 @@
  * Entry points from outside:
  *  - libxl__stream_write_start()
  *     - Start writing a stream from the start.
+ *  - libxl__stream_write_start_postcopy()
+ *     - Write the records required to permit postcopy resumption at the
+ *       migration target.
  *  - libxl__stream_write_start_checkpoint()
  *     - Write the records which form a checkpoint into a stream.
  *
@@ -290,6 +293,18 @@ void libxl__stream_write_start(libxl__egc *egc,
     stream_complete(egc, stream, rc);
 }
 
+void libxl__stream_write_start_postcopy(libxl__egc *egc,
+                                        libxl__stream_write_state *stream)
+{
+    assert(stream->running);
+    assert(!stream->in_checkpoint);
+    assert(!stream->in_postcopy_transition);
+    assert(!stream->back_channel);
+    stream->in_postcopy_transition = true;
+
+    write_emulator_xenstore_record(egc, stream);
+}
+
 void libxl__stream_write_start_checkpoint(libxl__egc *egc,
                                           libxl__stream_write_state *stream)
 {
@@ -380,6 +395,13 @@ void libxl__xc_domain_save_done(libxl__egc *egc, void *dss_void,
              * return value (Please refer to libxl__remus_teardown())
              */
             stream_complete(egc, stream, 0);
+        else if (stream->postcopy_completed)
+            /*
+             * If, on the other hand, this is a normal migration that had a
+             * postcopy migration stage, we're done at this point and want to
+             * report any error received here to our caller.
+             */
+            stream_complete(egc, stream, rc);
         else
             write_emulator_xenstore_record(egc, stream);
     }
@@ -432,7 +454,7 @@ static void emulator_xenstore_record_done(libxl__egc *egc,
     if (dss->type == LIBXL_DOMAIN_TYPE_HVM)
         write_emulator_context_record(egc, stream);
     else {
-        if (stream->in_checkpoint)
+        if (stream->in_checkpoint || stream->in_postcopy_transition)
             write_checkpoint_end_record(egc, stream);
         else
             write_end_record(egc, stream);
@@ -534,7 +556,7 @@ static void emulator_context_record_done(libxl__egc *egc,
     free(stream->emu_body);
     stream->emu_body = NULL;
 
-    if (stream->in_checkpoint)
+    if (stream->in_checkpoint || stream->in_postcopy_transition)
         write_checkpoint_end_record(egc, stream);
     else
         write_end_record(egc, stream);
@@ -582,7 +604,7 @@ static void stream_complete(libxl__egc *egc,
 {
     assert(stream->running);
 
-    if (stream->in_checkpoint) {
+    if (stream->in_checkpoint || stream->in_postcopy_transition) {
         assert(rc);
 
         /*
@@ -640,9 +662,10 @@ static void checkpoint_done(libxl__egc *egc,
                             libxl__stream_write_state *stream,
                             int rc)
 {
-    assert(stream->in_checkpoint);
+    assert(stream->in_checkpoint || stream->in_postcopy_transition);
 
-    stream->in_checkpoint = false;
+    stream->postcopy_completed = stream->in_postcopy_transition;
+    stream->in_checkpoint = stream->in_postcopy_transition = false;
     stream->checkpoint_callback(egc, stream, rc);
 }
 

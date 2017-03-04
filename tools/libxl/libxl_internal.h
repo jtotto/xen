@@ -3202,6 +3202,8 @@ struct libxl__stream_write_state {
     int rc;
     bool running;
     bool in_checkpoint;
+    bool in_postcopy_transition;
+    bool postcopy_completed;
     bool sync_teardown;  /* Only used to coordinate shutdown on error path. */
     bool in_checkpoint_state;
     libxl__save_helper_state shs;
@@ -3224,6 +3226,9 @@ struct libxl__stream_write_state {
 _hidden void libxl__stream_write_init(libxl__stream_write_state *stream);
 _hidden void libxl__stream_write_start(libxl__egc *egc,
                                        libxl__stream_write_state *stream);
+_hidden void
+libxl__stream_write_start_postcopy(libxl__egc *egc,
+                                   libxl__stream_write_state *stream);
 _hidden void
 libxl__stream_write_start_checkpoint(libxl__egc *egc,
                                      libxl__stream_write_state *stream);
