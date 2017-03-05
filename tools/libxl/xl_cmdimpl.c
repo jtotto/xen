@@ -4528,7 +4528,8 @@ static int save_domain(uint32_t domid, const char *filename, int checkpoint,
 
     save_domain_core_writeconfig(fd, filename, config_data, config_len);
 
-    int rc = libxl_domain_suspend(ctx, domid, fd, 0, NULL);
+    int rc = libxl_domain_suspend(ctx, domid, fd, 0, -1, 
+                                  LIBXL_SUSPEND_PRECOPY_FULL, NULL);
     close(fd);
 
     if (rc < 0) {
@@ -4691,7 +4692,8 @@ static void migrate_do_preamble(int send_fd, int recv_fd, pid_t child,
 }
 
 static void migrate_domain(uint32_t domid, const char *rune, int debug,
-                           const char *override_config_file)
+                           const char *override_config_file, 
+                           int precopy_period)
 {
     pid_t child = -1;
     int rc;
@@ -4719,7 +4721,8 @@ static void migrate_domain(uint32_t domid, const char *rune, int debug,
 
     if (debug)
         flags |= LIBXL_SUSPEND_DEBUG;
-    rc = libxl_domain_suspend(ctx, domid, send_fd, flags, NULL);
+    rc = libxl_domain_suspend(ctx, domid, send_fd, flags, recv_fd, 
+                              precopy_period, NULL);
     if (rc) {
         fprintf(stderr, "migration sender: libxl_domain_suspend failed"
                 " (rc=%d)\n", rc);
@@ -5144,6 +5147,7 @@ int main_migrate(int argc, char **argv)
     char *rune = NULL;
     char *host;
     int opt, daemonize = 1, monitor = 1, debug = 0, pause_after_migration = 0;
+    int precopy_period = LIBXL_SUSPEND_PRECOPY_FULL;
     static struct option opts[] = {
         {"debug", 0, 0, 0x100},
         {"live", 0, 0, 0x200},
@@ -5167,6 +5171,9 @@ int main_migrate(int argc, char **argv)
     case 'p':
         pause_after_migration = 1;
         break;
+    case 't':
+       precopy_period = atoi(optarg);
+       break; 
     case 0x100: /* --debug */
         debug = 1;
         break;
@@ -5203,7 +5210,7 @@ int main_migrate(int argc, char **argv)
                   pause_after_migration ? " -p" : "");
     }
 
-    migrate_domain(domid, rune, debug, config_filename);
+    migrate_domain(domid, rune, debug, config_filename, precopy_period);
     return EXIT_SUCCESS;
 }
 #endif
