@@ -273,8 +273,30 @@ static void precopy_period_exceeded(libxl__egc *egc, libxl__ev_time *ev,
 
 int libxl__domain_suspend_should_begin_postcopy(void *user)
 {
-    libxl__domain_save_state *dss = user;
+    libxl__save_helper_state *shs = user;
+    libxl__domain_save_state *dss = shs->caller_state;
     return dss->request_postcopy;
+}
+
+static void postcopy_transition_done(libxl__egc *egc,
+                                     libxl__stream_write_state *sws,
+                                     int rc);
+
+static void libxl__domain_suspend_postcopy_transition_callback(void *user)
+{
+    libxl__save_helper_state *shs = user;
+    libxl__stream_write_state *sws = CONTAINER_OF(shs, *sws, shs);
+    sws->checkpoint_callback = postcopy_transition_done;
+    libxl__stream_write_postcopy_transition(egc, sws);
+}
+
+static void postcopy_transition_done(libxl__egc *egc,
+                                     libxl__stream_write_state *sws,
+                                     int rc)
+{
+    libxl__domain_save_state *dss = sws->dss;
+    dss->postcopy_transition_completed = true;
+    libxl__xc_domain_saverestore_async_callback_done(egc, &sws->shs, !rc);
 }
 
 /*
@@ -416,7 +438,7 @@ void libxl__domain_save(libxl__egc *egc, libxl__domain_save_state *dss)
 
     if (dss->checkpointed_stream == LIBXL_CHECKPOINTED_STREAM_NONE) {
         callbacks->suspend = libxl__domain_suspend_callback;
-        callbacks->checkpoint = libxl__domain_postcopy_begin_callback;
+        callbacks->postcopy_transition = libxl__domain_suspend_postcopy_transition_callback;
 
         if (live) {
             switch (dss->precopy_period) {

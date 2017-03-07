@@ -3195,17 +3195,26 @@ struct libxl__stream_write_state {
     void (*completion_callback)(libxl__egc *egc,
                                 libxl__stream_write_state *sws,
                                 int rc);
-    void (*checkpoint_callback)(libxl__egc *egc,
-                                libxl__stream_write_state *sws,
-                                int rc);
+    /* Checkpointing and postcopy live migration are mutually exclusive. */
+    union {
+        void (*checkpoint_callback)(libxl__egc *egc,
+                                    libxl__stream_write_state *sws,
+                                    int rc);
+        void (*postcopy_transition_callback)(libxl__egc *egc,
+                                             libxl__stream_write_state *sws,
+                                             int rc);
+    };
     /* Private */
     int rc;
     bool running;
-    bool in_checkpoint;
-    bool in_postcopy_transition;
-    bool postcopy_completed;
+    enum {
+        SWS_STATE_NORMAL,
+        SWS_STATE_CHECKPOINT,
+        SWS_STATE_CHECKPOINT_STATE,
+        SWS_STATE_POSTCOPY_TRANSITION
+    } state;
+    bool postcopy_transition_completed;
     bool sync_teardown;  /* Only used to coordinate shutdown on error path. */
-    bool in_checkpoint_state;
     libxl__save_helper_state shs;
 
     /* Main stream-writing data. */
@@ -3227,8 +3236,8 @@ _hidden void libxl__stream_write_init(libxl__stream_write_state *stream);
 _hidden void libxl__stream_write_start(libxl__egc *egc,
                                        libxl__stream_write_state *stream);
 _hidden void
-libxl__stream_write_start_postcopy(libxl__egc *egc,
-                                   libxl__stream_write_state *stream);
+libxl__stream_write_postcopy_transition(libxl__egc *egc,
+                                        libxl__stream_write_state *stream);
 _hidden void
 libxl__stream_write_start_checkpoint(libxl__egc *egc,
                                      libxl__stream_write_state *stream);
@@ -3296,6 +3305,7 @@ struct libxl__domain_save_state {
     int precopy_period;
     libxl__ev_time precopy_timer;
     bool request_postcopy;
+    bool postcopy_transition_completed;
     libxl_domain_type type;
     int live;
     int debug;

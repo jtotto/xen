@@ -22,7 +22,7 @@
  * Entry points from outside:
  *  - libxl__stream_write_start()
  *     - Start writing a stream from the start.
- *  - libxl__stream_write_start_postcopy()
+ *  - libxl__stream_write_postcopy_transition()
  *     - Write the records required to permit postcopy resumption at the
  *       migration target.
  *  - libxl__stream_write_start_checkpoint()
@@ -216,7 +216,7 @@ void libxl__stream_write_init(libxl__stream_write_state *stream)
 
     stream->rc = 0;
     stream->running = false;
-    stream->in_checkpoint = false;
+    stream->state = SWS_STATE_NORMAL;
     stream->sync_teardown = false;
     FILLZERO(stream->dc);
     stream->record_done_callback = NULL;
@@ -293,14 +293,17 @@ void libxl__stream_write_start(libxl__egc *egc,
     stream_complete(egc, stream, rc);
 }
 
-void libxl__stream_write_start_postcopy(libxl__egc *egc,
-                                        libxl__stream_write_state *stream)
+void libxl__stream_write_postcopy_transition(libxl__egc *egc,
+                                             libxl__stream_write_state *stream)
 {
+    libxl__domain_save_state *dss = stream->dss;
+
     assert(stream->running);
-    assert(!stream->in_checkpoint);
-    assert(!stream->in_postcopy_transition);
-    assert(!stream->back_channel);
-    stream->in_postcopy_transition = true;
+    assert(dss->checkpointed_stream == LIBXL_CHECKPOINTED_STREAM_NONE);
+    assert(stream->state == SWS_STATE_NORMAL);
+    assert(!stream->postcopy_transition_completed);
+
+    stream->state = SWS_STATE_POSTCOPY_TRANSITION;
 
     write_emulator_xenstore_record(egc, stream);
 }
@@ -309,9 +312,9 @@ void libxl__stream_write_start_checkpoint(libxl__egc *egc,
                                           libxl__stream_write_state *stream)
 {
     assert(stream->running);
-    assert(!stream->in_checkpoint);
+    assert(stream->state == SWS_STATE_NORMAL);
     assert(!stream->back_channel);
-    stream->in_checkpoint = true;
+    stream->state = SWS_STATE_CHECKPOINT;
 
     write_emulator_xenstore_record(egc, stream);
 }
@@ -395,11 +398,11 @@ void libxl__xc_domain_save_done(libxl__egc *egc, void *dss_void,
              * return value (Please refer to libxl__remus_teardown())
              */
             stream_complete(egc, stream, 0);
-        else if (stream->postcopy_completed)
+        else if (stream->postcopy_transition_completed)
             /*
              * If, on the other hand, this is a normal migration that had a
-             * postcopy migration stage, we're done at this point and want to
-             * report any error received here to our caller.
+             * postcopy migration stage, we're completely done at this point and
+             * want to report any error received here to our caller.
              */
             stream_complete(egc, stream, rc);
         else
@@ -453,12 +456,8 @@ static void emulator_xenstore_record_done(libxl__egc *egc,
 
     if (dss->type == LIBXL_DOMAIN_TYPE_HVM)
         write_emulator_context_record(egc, stream);
-    else {
-        if (stream->in_checkpoint || stream->in_postcopy_transition)
-            write_checkpoint_end_record(egc, stream);
-        else
-            write_end_record(egc, stream);
-    }
+    else
+        write_state_end_record(egc, stream);
 }
 
 static void write_emulator_context_record(libxl__egc *egc,
@@ -556,34 +555,47 @@ static void emulator_context_record_done(libxl__egc *egc,
     free(stream->emu_body);
     stream->emu_body = NULL;
 
-    if (stream->in_checkpoint || stream->in_postcopy_transition)
-        write_checkpoint_end_record(egc, stream);
-    else
-        write_end_record(egc, stream);
+    write_state_end_record(egc, stream);
 }
 
-static void write_end_record(libxl__egc *egc,
-                             libxl__stream_write_state *stream)
+static void write_state_end_record(libxl__egc *egc,
+                                   libxl__stream_write_state *stream)
 {
     struct libxl__sr_rec_hdr rec;
+    sws_record_done_cb cb;
+    const char *what;
 
     FILLZERO(rec);
-    rec.type = REC_TYPE_END;
 
-    setup_write(egc, stream, "end record",
-                &rec, NULL, stream_success);
+    switch (stream->state) {
+    case SWS_STATE_NORMAL:
+        rec.type = REC_TYPE_END;
+        what     = "end record";
+        cb       = stream_success;
+        break;
+    case SWS_STATE_CHECKPOINT:
+        rec.type = REC_TYPE_CHECKPOINT_END;
+        what     = "checkpoint end record";
+        cb       = checkpoint_end_record_done;
+        break;
+    case SWS_STATE_POSTCOPY_TRANSITION:
+        rec.type = REC_TYPE_POSTCOPY_TRANSITION_END;
+        what     = "postcopy transition end record";
+        cb       = postcopy_transition_end_record_done;
+        break;
+    default:
+        /* SWS_STATE_CHECKPOINT_STATE has no end record */
+        assert(false);
+    }
+
+    setup_write(egc, stream, what, &rec, NULL, cb);
 }
 
-static void write_checkpoint_end_record(libxl__egc *egc,
-                                        libxl__stream_write_state *stream)
+static void postcopy_transition_end_record_done(
+    libxl__egc *egc,
+    libxl__stream_write_state *stream)
 {
-    struct libxl__sr_rec_hdr rec;
-
-    FILLZERO(rec);
-    rec.type = REC_TYPE_CHECKPOINT_END;
-
-    setup_write(egc, stream, "checkpoint end record",
-                &rec, NULL, checkpoint_end_record_done);
+    postcopy_transition_done(egc, stream, 0);
 }
 
 static void checkpoint_end_record_done(libxl__egc *egc,
@@ -604,7 +616,11 @@ static void stream_complete(libxl__egc *egc,
 {
     assert(stream->running);
 
-    if (stream->in_checkpoint || stream->in_postcopy_transition) {
+    switch (stream->state) {
+    case SWS_STATE_NORMAL:
+        stream_done(egc, stream, rc);
+        break;
+    case SWS_STATE_CHECKPOINT:
         assert(rc);
 
         /*
@@ -613,10 +629,17 @@ static void stream_complete(libxl__egc *egc,
          * libxl__xc_domain_save_done()
          */
         checkpoint_done(egc, stream, rc);
-        return;
-    }
+        break;
+    case SWS_STATE_POSTCOPY_TRANSITION:
+        assert(rc);
 
-    if (stream->in_checkpoint_state) {
+        /*
+         * To deal with errors during the postcopy transition, we use the same
+         * strategy as during checkpoints.
+         */
+        postcopy_transition_done(egc, stream, rc);
+        break;
+    case SWS_STATE_CHECKPOINT_STATE:
         assert(rc);
 
         /*
@@ -628,17 +651,17 @@ static void stream_complete(libxl__egc *egc,
          *    libxl__stream_write_abort()
          */
         checkpoint_state_done(egc, stream, rc);
-        return;
+        break;
+    default:
+        assert(false);
     }
-
-    stream_done(egc, stream, rc);
 }
 
 static void stream_done(libxl__egc *egc,
                         libxl__stream_write_state *stream, int rc)
 {
     assert(stream->running);
-    assert(!stream->in_checkpoint_state);
+    assert(stream->state == SWS_STATE_NORMAL);
     stream->running = false;
 
     if (stream->emu_carefd)
@@ -658,14 +681,23 @@ static void stream_done(libxl__egc *egc,
     }
 }
 
+static void postcopy_transition_done(libxl__egc *egc,
+                                     libxl__stream_write_state *stream,
+                                     int rc)
+{
+    assert(stream->state == SWS_STATE_POSTCOPY_TRANSITION);
+    stream->postcopy_transition_completed = true;
+    stream->state = SWS_STATE_NORMAL;
+    stream->postcopy_transition_callback(egc, stream, rc);
+}
+
 static void checkpoint_done(libxl__egc *egc,
                             libxl__stream_write_state *stream,
                             int rc)
 {
-    assert(stream->in_checkpoint || stream->in_postcopy_transition);
+    assert(stream->state == SWS_STATE_CHECKPOINT);
 
-    stream->postcopy_completed = stream->in_postcopy_transition;
-    stream->in_checkpoint = stream->in_postcopy_transition = false;
+    stream->state = SWS_STATE_NORMAL;
     stream->checkpoint_callback(egc, stream, rc);
 }
 
@@ -722,9 +754,8 @@ void libxl__stream_write_checkpoint_state(libxl__egc *egc,
     struct libxl__sr_rec_hdr rec;
 
     assert(stream->running);
-    assert(!stream->in_checkpoint);
-    assert(!stream->in_checkpoint_state);
-    stream->in_checkpoint_state = true;
+    assert(stream->state == NORMAL);
+    stream->state = SWS_STATE_CHECKPOINT;
 
     FILLZERO(rec);
     rec.type = REC_TYPE_CHECKPOINT_STATE;
@@ -743,8 +774,8 @@ static void write_checkpoint_state_done(libxl__egc *egc,
 static void checkpoint_state_done(libxl__egc *egc,
                                   libxl__stream_write_state *stream, int rc)
 {
-    assert(stream->in_checkpoint_state);
-    stream->in_checkpoint_state = false;
+    assert(stream->state == SWS_STATE_CHECKPOINT_STATE);
+    stream->state = SWS_STATE_NORMAL;
     stream->checkpoint_callback(egc, stream, rc);
 }
 
