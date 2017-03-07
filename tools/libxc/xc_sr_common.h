@@ -399,6 +399,27 @@ static inline int write_record(struct xc_sr_context *ctx,
  */
 int read_record(struct xc_sr_context *ctx, int fd, struct xc_sr_record *rec);
 
+/* XXX documentation */
+struct xc_sr_read_record_context
+{
+    size_t offset;
+    struct xc_sr_rhdr rhdr;
+    void *data;
+};
+
+static inline void begin_read_record(struct xc_sr_read_record_context *rrctx)
+{
+    *rrctx = (struct xc_sr_read_record_context) { 0 };
+}
+
+int try_read_record(struct xc_sr_read_record_context *rrctx, int fd,
+                    struct xc_sr_record *rec);
+
+static inline void abort_read_record(struct xc_sr_read_record_context *rrctx)
+{
+    free(rrctx->data);
+}
+
 /*
  * This would ideally be private in restore.c, but is needed by
  * x86_pv_localise_page() if we receive pagetables frames ahead of the
