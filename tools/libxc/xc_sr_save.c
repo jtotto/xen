@@ -83,6 +83,17 @@ static int write_checkpoint_record(struct xc_sr_context *ctx)
 }
 
 /*
+ * Writes a POSTCOPY_BEGIN record into the stream.
+ */
+static int write_postcopy_begin_record(struct xc_sr_context *ctx)
+{
+    struct xc_sr_record postcopy_begin =
+        { REC_TYPE_POSTCOPY_BEGIN, 0, NULL };
+
+    return write_record(ctx, &postcopy_begin);
+}
+
+/*
  * Writes a POSTCOPY_TRANSITION record into the stream.
  */
 static int write_postcopy_transition_record(struct xc_sr_context *ctx)
@@ -366,6 +377,10 @@ static int send_postcopy_pfns(struct xc_sr_context *ctx)
 
     DECLARE_HYPERCALL_BUFFER_SHADOW(unsigned long, dirty_bitmap,
                                     &ctx->save.dirty_bitmap_hbuf);
+
+    rc = write_postcopy_begin_record(ctx);
+    if ( rc )
+        return rc;
 
     assert(batch_empty(ctx));
     ctx->save.batch_type = XC_SR_SAVE_BATCH_PFN;
