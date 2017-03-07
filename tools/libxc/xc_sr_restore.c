@@ -334,29 +334,16 @@ static int handle_page_data(struct xc_sr_context *ctx, struct xc_sr_record *rec)
     xc_interface *xch = ctx->xch;
     struct xc_sr_rec_page_data_header *pages = rec->data;
     unsigned i, pages_of_data = 0;
-    int rc = -1;
+    int rc;
 
     xen_pfn_t *pfns = NULL, pfn;
     uint32_t *types = NULL, type;
 
-    if ( rec->length < sizeof(*pages) )
-    {
-        ERROR("PAGE_DATA record truncated: length %u, min %zu",
-              rec->length, sizeof(*pages));
+    rc = validate_pages_record(rec);
+    if ( rc )
         goto err;
-    }
-    else if ( pages->count < 1 )
-    {
-        ERROR("Expected at least 1 pfn in PAGE_DATA record");
-        goto err;
-    }
-    else if ( rec->length < sizeof(*pages) + (pages->count * sizeof(uint64_t)) )
-    {
-        ERROR("PAGE_DATA record (length %u) too short to contain %u"
-              " pfns worth of information", rec->length, pages->count);
-        goto err;
-    }
 
+    rc = -1;
     pfns = malloc(pages->count * sizeof(*pfns));
     types = malloc(pages->count * sizeof(*types));
     if ( !pfns || !types )

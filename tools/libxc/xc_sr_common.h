@@ -208,8 +208,9 @@ struct xc_sr_context
             unsigned long p2m_size;
 
             enum {
-                XC_SR_SAVE_BATCH_PAGE,
-                XC_SR_SAVE_BATCH_PFN
+                XC_SR_SAVE_BATCH_PRECOPY_PAGE,
+                XC_SR_SAVE_BATCH_POSTCOPY_PAGE,
+                XC_SR_SAVE_BATCH_POSTCOPY_PFN
             } batch_type;
             xen_pfn_t *batch_pfns;
             unsigned nr_batch_pfns;
@@ -407,7 +408,7 @@ struct xc_sr_read_record_context
     void *data;
 };
 
-static inline void begin_read_record(struct xc_sr_read_record_context *rrctx)
+static inline void read_record_init(struct xc_sr_read_record_context *rrctx)
 {
     *rrctx = (struct xc_sr_read_record_context) { 0 };
 }
@@ -415,10 +416,12 @@ static inline void begin_read_record(struct xc_sr_read_record_context *rrctx)
 int try_read_record(struct xc_sr_read_record_context *rrctx, int fd,
                     struct xc_sr_record *rec);
 
-static inline void abort_read_record(struct xc_sr_read_record_context *rrctx)
+static inline void read_record_destroy(struct xc_sr_read_record_context *rrctx)
 {
     free(rrctx->data);
 }
+
+int validate_pages_record(struct xc_sr_record *rec);
 
 /*
  * This would ideally be private in restore.c, but is needed by

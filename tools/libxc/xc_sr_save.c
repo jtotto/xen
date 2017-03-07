@@ -7,14 +7,16 @@
 
 static const unsigned batch_sizes[] =
 {
-    [XC_SR_SAVE_BATCH_PAGE] = MAX_PAGE_BATCH_SIZE,
-    [XC_SR_SAVE_BATCH_PFN]  = MAX_PFN_BATCH_SIZE
+    [XC_SR_SAVE_BATCH_PAGE]          = MAX_PAGE_BATCH_SIZE,
+    [XC_SR_SAVE_BATCH_POSTCOPY_PAGE] = MAX_POSTCOPY_BATCH_SIZE,
+    [XC_SR_SAVE_BATCH_PFN]           = MAX_PFN_BATCH_SIZE
 };
 
 static const uint32_t batch_rec_types[] =
 {
-    [XC_SR_SAVE_BATCH_PAGE] = REC_TYPE_PAGE_DATA,
-    [XC_SR_SAVE_BATCH_PFN]  = REC_TYPE_POSTCOPY_BEGIN
+    [XC_SR_SAVE_BATCH_PAGE]          = REC_TYPE_PAGE_DATA,
+    [XC_SR_SAVE_BATCH_POSTCOPY_PAGE] = REC_TYPE_PAGE_DATA,
+    [XC_SR_SAVE_BATCH_PFN]           = REC_TYPE_POSTCOPY_PFNS
 };
 
 /*
@@ -81,6 +83,17 @@ static int write_checkpoint_record(struct xc_sr_context *ctx)
 }
 
 /*
+ * Writes a POSTCOPY_TRANSITION record into the stream.
+ */
+static int write_postcopy_transition_record(struct xc_sr_context *ctx)
+{
+    struct xc_sr_record postcopy_transition =
+        { REC_TYPE_POSTCOPY_TRANSITION, 0, NULL };
+
+    return write_record(ctx, &postcopy_transition);
+}
+
+/*
  * Writes a batch of memory as a PAGE_DATA record into the stream.  The batch
  * is constructed in ctx->save.batch_pfns.
  *
@@ -104,7 +117,8 @@ static int write_batch(struct xc_sr_context *ctx)
     uint64_t *rec_pfns = NULL;
     struct iovec *iov = NULL; int iovcnt = 0;
     struct xc_sr_rec_pages_header hdr = { 0 };
-    bool send_page_contents = (ctx->save.batch_type == XC_SR_SAVE_BATCH_PAGE);
+    bool send_page_contents =
+        (ctx->save.batch_type != XC_SR_SAVE_BATCH_POSTCOPY_PFN);
     struct xc_sr_record rec =
     {
         .type = batch_rec_types[ctx->save.batch_type],
@@ -454,12 +468,11 @@ static int do_send_dirty_pages(struct xc_sr_context *ctx,
 
         for ( ; p < ctx->save.p2m_size && !batch_full(ctx); ++p )
         {
-            if ( !test_bit(p, dirty_bitmap) )
-                continue;
-
-            add_to_batch(ctx, p);
-            clear_bit(p, dirty_bitmap);
-            ++written;
+            if ( test_and_clear_bit(p, dirty_bitmap) )
+            {
+                add_to_batch(ctx, p);
+                ++written;
+            }
         }
 
         rc = flush_batch(ctx);
@@ -620,7 +633,7 @@ static int precopy_memory_live(struct xc_sr_context *ctx)
 static int colo_merge_secondary_dirty_bitmap(struct xc_sr_context *ctx)
 {
     xc_interface *xch = ctx->xch;
-    struct xc_sr_record rec;
+    struct xc_sr_record rec = { 0, 0, NULL };
     uint64_t *pfns = NULL;
     uint64_t pfn;
     unsigned count, i;
@@ -720,8 +733,11 @@ static int suspend_and_check_dirty(struct xc_sr_context *ctx)
         }
     }
 
-    ctx->save.nr_final_dirty_pages =
-        stats.dirty_count + ctx->save.nr_deferred_pages;
+    /* The postcopy loop depends on this value being completely accurate, so
+     * we'll compute exactly rather than estimate the population of the final
+     * dirty bitmap. */
+    ctx->save.nr_final_dirty_pages = bitmap_popcount(dirty_bitmap,
+                                                     ctx->save.p2m_size);
 
     bitmap_clear(ctx->save.deferred_pages, ctx->save.p2m_size);
     ctx->save.nr_deferred_pages = 0;
@@ -810,6 +826,179 @@ static int send_domain_memory_live(struct xc_sr_context *ctx)
     }
 
   out:
+    return rc;
+}
+
+static int handle_postcopy_faults(struct xc_sr_context *ctx,
+                                  struct xc_sr_record *rec,
+                                  unsigned long *nr_new_fault_pfns_out,
+                                  xen_pfn_t *last_fault_pfn_out)
+{
+    int rc;
+    struct xc_sr_rec_pages_header *fault_pages = rec->data;
+
+    DECLARE_HYPERCALL_BUFFER_SHADOW(unsigned long, dirty_bitmap,
+                                    &ctx->save.dirty_bitmap_hbuf);
+
+    rc = validate_pages_record(rec);
+    if ( rc )
+        return rc;
+
+    assert(ctx->save.batch_type == XC_SR_SAVE_BATCH_POSTCOPY_PAGE);
+    for ( i = 0; i < fault_pages->count; ++i )
+    {
+        if ( test_and_clear_bit(fault_pages->pfn[i], dirty_bitmap) )
+        {
+            if ( batch_full(ctx) )
+            {
+                rc = flush_batch(ctx);
+                if ( rc )
+                    return rc;
+            }
+
+            add_to_batch(ctx, fault_pages->pfn[i]);
+        }
+    }
+
+    /* _Don't_ flush yet - fill out the rest of the batch. */
+
+    assert(fault_pages->count);
+    *last_fault_pfn_out = fault_pages->pfn[fault_pages->count - 1];
+    return 0;
+}
+
+/*
+ * Now that the guest has resumed at the destination, send all of the remaining
+ * dirty pages.  Periodically check for pages needed by the destination to make
+ * progress.
+ */
+static int postcopy_domain_memory(struct xc_sr_context *ctx)
+{
+    int rc;
+    int recv_fd = ctx->save.recv_fd;
+    int old_flags, nonblocking_flags;
+    struct xc_sr_read_record_context rrctx;
+    struct xc_sr_record rec = { 0, 0, NULL };
+    unsigned long nr_new_fault_pfns;
+    unsigned long pages_remaining = ctx->save.nr_final_dirty_pages;
+    xen_pfn_t last_fault_pfn, p;
+    unsigned i;
+    bool received_postcopy_complete = false;
+
+    DECLARE_HYPERCALL_BUFFER_SHADOW(unsigned long, dirty_bitmap,
+                                    &ctx->save.dirty_bitmap_hbuf);
+
+    read_record_init(&rrctx);
+
+    /* First, configure the receive stream as non-blocking so we can
+     * periodically poll it for fault requests. */
+    old_flags = fcntl(recv_fd, F_GETFL);
+    if ( old_flags == -1 )
+    {
+        rc = old_flags;
+        goto err;
+    }
+
+    assert(!(old_flags & O_NONBLOCK));
+    flags = old_flags | O_NONBLOCK;
+
+    rc = fcntl(recv_fd, F_SETFL, flags);
+    if ( rc == -1 )
+    {
+        goto err;
+    }
+
+    assert(batch_empty(ctx));
+    ctx->save.batch_type = XC_SR_SAVE_BATCH_POSTCOPY_PAGE;
+
+    p = 0;
+    while ( pages_remaining )
+    {
+        /* Between (small) batches, poll the receive stream for new
+         * POSTCOPY_FAULT messages. */
+        while ( true )
+        {
+            rc = try_read_record(&rrctx, recv_fd, &rec);
+            if ( rc )
+            {
+                if ( (errno == EAGAIN) || (errno == EWOULDBLOCK) )
+                {
+                    break;
+                }
+
+                goto err;
+            }
+            else
+            {
+                /* The destination may decide that some pages we think are dirty
+                 * don't actually need to be migrated (e.g. the HVM console
+                 * page, which is simply cleared unconditionally).  It is
+                 * therefore possible that we receive the POSTCOPY_COMPLETE
+                 * record here, and if we do we can bail immediately. */
+                if ( rec->type == REC_TYPE_POSTCOPY_COMPLETE )
+                {
+                    received_postcopy_complete = true;
+                    goto done;
+                }
+
+                rc = handle_postcopy_faults(ctx, &rec, &nr_new_fault_pfns,
+                                            &last_fault_pfn);
+                if ( rc )
+                    goto err;
+
+                free(rec.data);
+                rec.data = NULL;
+
+                assert(pages_remaining >= nr_new_fault_pfns);
+                pages_remaining -= nr_new_fault_pfns;
+
+                /* To take advantage of any locality present in the postcopy
+                 * faults, continue the background copy process from the newest
+                 * page in the fault batch. */
+                p = (last_fault_pfn + 1) % ctx->save.p2m_size;
+            }
+        }
+
+        /* Now that we've serviced all of the POSTCOPY_FAULT requests we know
+         * about for now, fill out the current batch with background pages. */
+        for ( ;
+              pages_remaining && !batch_full(ctx);
+              p = (p + 1) % ctx->save.p2m_size )
+        {
+            if ( test_and_clear_bit(p, dirty_bitmap) )
+            {
+                add_to_batch(ctx, p);
+                --pages_remaining;
+            }
+        }
+
+        rc = flush_batch(ctx);
+        if ( rc )
+            goto err;
+    }
+
+ done:
+    /* Revert the receive stream to the (blocking) state we found it in. */
+    rc = fcntl(recv_fd, F_SETFL, old_flags);
+    if ( rc == -1 )
+    {
+        goto err;
+    }
+
+    if ( !received_postcopy_complete )
+    {
+        /* Flush any outstanding POSTCOPY_FAULT requests from the migration
+         * stream by reading until a POSTCOPY_COMPLETE is received. */
+        do {
+            rc = read_record(ctx, recv_fd, &rec);
+            if ( rc )
+                goto err;
+        } while ( rec.type != REC_TYPE_POSTCOPY_COMPLETE );
+    }
+
+ err:
+    free(rec.data);
+    read_record_destroy(&rrctx);
     return rc;
 }
 
@@ -953,10 +1142,27 @@ static int save(struct xc_sr_context *ctx, uint16_t guest_type)
 
         if ( ctx->save.postcopy_requested )
         {
-            /* hand things off to libxl so that it can finish the rest
-             * of the high-level migration */
+            assert(ctx->save.checkpointed == XC_MIG_STREAM_NONE);
 
-            /* XXX when libxl is done, we can begin the demand-migration loop */
+            /* Notify the destination that we're ready to transition into the
+             * postcopy phase of the migration... */
+            rc = write_postcopy_transition_record(ctx);
+            if ( rc )
+                goto err;
+
+            /* ... and yield control to libxl to finish the transition. */
+            rc = ctx->save.callbacks->postcopy_transition(
+                ctx->save.callbacks->data);
+            if ( !rc )
+            {
+                rc = -1;
+                goto err;
+            }
+
+            /* When libxl is done, we can begin the postcopy loop. */
+            rc = postcopy_domain_memory(ctx);
+            if ( rc )
+                goto err;
         }
         else if ( ctx->save.checkpointed != XC_MIG_STREAM_NONE )
         {

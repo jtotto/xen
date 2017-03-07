@@ -187,6 +187,7 @@ int try_read_record(struct xc_sr_read_record_context *rrctx, int fd,
             if ( (errno != EAGAIN) && (errno != EWOULDBLOCK) )
             {
                 free(rrctx->data);
+                rrctx->data = NULL;
                 PERROR("Failed to read %zu bytes for record (0x%08x, %s)",
                        datasz, rrctx->rhdr.type,
                        rec_type_to_str(rrctx->rhdr.type));
@@ -200,6 +201,42 @@ int try_read_record(struct xc_sr_read_record_context *rrctx, int fd,
     rec->type   = rrctx->rhdr.type;
     rec->length = rrctx->rhdr.length;
     rec->data   = rrctx->data;
+    rrctx->data = NULL;
+
+    return 0;
+}
+
+int validate_pages_record(struct xc_sr_record *rec)
+{
+    struct xc_sr_rec_pages_header *pages = rec->data;
+
+    if ( rec->type != REC_TYPE_PAGE_DATA &&
+         rec->type != REC_TYPE_POSTCOPY_PFNS &&
+         rec->type != REC_TYPE_POSTCOPY_FAULT )
+    {
+        ERROR("Pages record type expected, instead received record of type "
+              "%#x (%s)", rec->type, rec_type_to_str(rec->type));
+        return -1;
+    }
+    else if ( rec->length < sizeof(*pages) )
+    {
+        ERROR("%s record truncated: length %u, min %zu",
+              rec_type_to_str(rec->type), rec->length, sizeof(*pages));
+        return -1;
+    }
+    else if ( pages->count < 1 )
+    {
+        ERROR("Expected at least 1 pfn in %s record",
+              rec_type_to_str(rec->type));
+        return -1;
+    }
+    else if ( rec->length < sizeof(*pages) + (pages->count * sizeof(uint64_t)) )
+    {
+        ERROR("%s record (length %u) too short to contain %u"
+              " pfns worth of information", rec->length, pages->count,
+              rec_type_to_str(rec->type));
+        return -1;
+    }
 
     return 0;
 }

@@ -77,10 +77,13 @@ struct xc_sr_rhdr
 #define REC_TYPE_CHECKPOINT                 0x0000000eU
 #define REC_TYPE_CHECKPOINT_DIRTY_PFN_LIST  0x0000000fU
 #define REC_TYPE_POSTCOPY_PFNS              0x00000010U
+#define REC_TYPE_POSTCOPY_TRANSITION        0x00000011U
+#define REC_TYPE_POSTCOPY_FAULT             0x00000012U
+#define REC_TYPE_POSTCOPY_COMPLETE          0x00000013U
 
 #define REC_TYPE_OPTIONAL             0x80000000U
 
-/* PAGE_DATA/POSTCOPY_PFNS */
+/* PAGE_DATA/POSTCOPY_PFNS/POSTCOPY_FAULT */
 struct xc_sr_rec_pages_header
 {
     uint32_t count;
