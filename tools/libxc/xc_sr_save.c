@@ -62,47 +62,19 @@ static int write_headers(struct xc_sr_context *ctx, uint16_t guest_type)
     return 0;
 }
 
-/*
- * Writes an END record into the stream.
- */
-static int write_end_record(struct xc_sr_context *ctx)
-{
-    struct xc_sr_record end = { REC_TYPE_END, 0, NULL };
+#define WRITE_TRIVIAL_RECORD_FN(name, type)                         \
+    static int write_ ## name ## _record(struct xc_sr_context *ctx) \
+    {                                                               \
+        struct xc_sr_record name = { (type), 0, NULL };             \
+                                                                    \
+        return write_record(ctx, &name);                            \
+    }
 
-    return write_record(ctx, &end);
-}
-
-/*
- * Writes a CHECKPOINT record into the stream.
- */
-static int write_checkpoint_record(struct xc_sr_context *ctx)
-{
-    struct xc_sr_record checkpoint = { REC_TYPE_CHECKPOINT, 0, NULL };
-
-    return write_record(ctx, &checkpoint);
-}
-
-/*
- * Writes a POSTCOPY_BEGIN record into the stream.
- */
-static int write_postcopy_begin_record(struct xc_sr_context *ctx)
-{
-    struct xc_sr_record postcopy_begin =
-        { REC_TYPE_POSTCOPY_BEGIN, 0, NULL };
-
-    return write_record(ctx, &postcopy_begin);
-}
-
-/*
- * Writes a POSTCOPY_TRANSITION record into the stream.
- */
-static int write_postcopy_transition_record(struct xc_sr_context *ctx)
-{
-    struct xc_sr_record postcopy_transition =
-        { REC_TYPE_POSTCOPY_TRANSITION, 0, NULL };
-
-    return write_record(ctx, &postcopy_transition);
-}
+WRITE_TRIVIAL_RECORD_FN(end,                 REC_TYPE_END);
+WRITE_TRIVIAL_RECORD_FN(checkpoint,          REC_TYPE_CHECKPOINT);
+WRITE_TRIVIAL_RECORD_FN(postcopy_begin,      REC_TYPE_POSTCOPY_BEGIN);
+WRITE_TRIVIAL_RECORD_FN(postcopy_pfns_begin, REC_TYPE_POSTCOPY_PFNS_BEGIN);
+WRITE_TRIVIAL_RECORD_FN(postcopy_transition, REC_TYPE_POSTCOPY_TRANSITION);
 
 /*
  * Writes a batch of memory as a PAGE_DATA record into the stream.  The batch
@@ -378,9 +350,9 @@ static int send_postcopy_pfns(struct xc_sr_context *ctx)
     DECLARE_HYPERCALL_BUFFER_SHADOW(unsigned long, dirty_bitmap,
                                     &ctx->save.dirty_bitmap_hbuf);
 
-    rc = write_postcopy_begin_record(ctx);
+    rc = write_postcopy_pfns_begin_record(ctx);
     if ( rc )
-        return rc;
+        goto err;
 
     assert(batch_empty(ctx));
     ctx->save.batch_type = XC_SR_SAVE_BATCH_PFN;
@@ -827,11 +799,12 @@ static int send_domain_memory_live(struct xc_sr_context *ctx)
     if ( rc )
         goto out;
 
-    rc = ctx->save.postcopy_requested
-        ? send_postcopy_pfns(ctx)
-        : send_dirty_pages(ctx, ctx->save.nr_final_dirty_pages);
-    if ( rc )
-        goto out;
+    if ( !ctx->save.postcopy_requested )
+    {
+        rc = send_dirty_pages(ctx, ctx->save.nr_final_dirty_pages);
+        if ( rc )
+            goto out;
+    }
 
     if ( ctx->save.debug && ctx->save.checkpointed != XC_MIG_STREAM_NONE )
     {
@@ -1151,13 +1124,27 @@ static int save(struct xc_sr_context *ctx, uint16_t guest_type)
             goto err;
         }
 
+        /* End-of-checkpoint records are handled slightly differently in the
+         * case of postcopy migration, so we need to alert the receiver before
+         * sending them. */
+        if ( ctx->save.postcopy_requested )
+        {
+            assert(ctx->save.checkpointed == XC_MIG_STREAM_NONE);
+
+            rc = write_postcopy_begin_record(ctx);
+            if ( rc )
+                goto err;
+        }
+
         rc = ctx->save.ops.end_of_checkpoint(ctx);
         if ( rc )
             goto err;
 
         if ( ctx->save.postcopy_requested )
         {
-            assert(ctx->save.checkpointed == XC_MIG_STREAM_NONE);
+            rc = send_postcopy_pfns(ctx);
+            if ( rc )
+                goto err;
 
             /* Notify the destination that we're ready to transition into the
              * postcopy phase of the migration... */
