@@ -154,6 +154,11 @@ _xc_cpuid_autogen.h: $(XEN_ROOT)/xen/include/public/arch-x86/cpufeatureset.h $(X
 build: _xc_cpuid_autogen.h
 endif
 
+_libxc_list.h: $(XEN_INCLUDE)/xen-external/bsd-sys-queue-h-seddery $(XEN_INCLUDE)/xen-external/bsd-sys-queue.h
+	$(PERL) $^ --prefix=libxc >$@.new
+	$(call move-if-changed,$@.new,$@)
+build: _libxc_list.h
+
 $(CTRL_LIB_OBJS) $(GUEST_LIB_OBJS) \
 $(CTRL_PIC_OBJS) $(GUEST_PIC_OBJS): xc_private.h
 
