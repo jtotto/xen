@@ -794,6 +794,332 @@ static int handle_postcopy_transition(struct xc_sr_context *ctx)
     /* XXX */
 }
 
+static void get_request(struct xc_sr_restore_paging *paging, vm_event_request_t *req)
+{
+    vm_event_back_ring_t *back_ring;
+    RING_IDX req_cons;
+
+    back_ring = paging->back_ring;
+    req_cons = back_ring->req_cons;
+
+    /* Copy request */
+    memcpy(req, RING_GET_REQUEST(back_ring, req_cons), sizeof(*req));
+    req_cons++;
+
+    /* Update ring */
+    back_ring->req_cons = req_cons;
+    back_ring->sring->req_event = req_cons + 1;
+}
+
+static void put_response(struct xc_sr_restore_paging *paging, vm_event_response_t *rsp)
+{
+    vm_event_back_ring_t *back_ring;
+    RING_IDX rsp_prod;
+
+    back_ring = paging->back_ring;
+    rsp_prod = back_ring->rsp_prod_pvt;
+
+    /* Copy response */
+    memcpy(RING_GET_RESPONSE(back_ring, rsp_prod), rsp, sizeof(*rsp));
+    rsp_prod++;
+
+    /* Update ring */
+    back_ring->rsp_prod_pvt = rsp_prod;
+    RING_PUSH_RESPONSES(back_ring);
+}
+
+static int notify_page_populated(struct xc_sr_restore_paging *paging,
+                                 uint64_t pfn, uint32_t flags,
+                                 uint32_t vcpu_id)
+{
+    struct vm_event_response_t rsp;
+    rsp.u.mem_paging.gfn = req.u.mem_paging.gfn;
+    rsp.flags = flags;
+    rsp.vcpu_id = vcpu_id;
+    put_response(paging, &rsp);
+    return xenevtchn_notify(paging->xce_handle, paging->port);
+}
+
+static int process_postcopy_page_data(struct xc_sr_context *ctx, unsigned count,
+                                      xen_pfn_t *pfns, uint32_t *types,
+                                      void *page_data)
+{
+    struct xc_sr_restore_paging *paging = ctx->restore.paging;
+    int rc, i;
+    struct xc_sr_pending_postcopy_requests *ppfn;
+    struct xc_sr_pending_postcopy_request *request;
+
+    for ( i = 0; i < count; ++i )
+    {
+        ppfn = paging->pending_pfns[pfns[i]];
+
+        switch ( types[i] )
+        {
+        case XEN_DOMCTL_PFINFO_XTAB:
+        case XEN_DOMCTL_PFINFO_BROKEN:
+        case XEN_DOMCTL_PFINFO_XALLOC:
+            if ( !ppfn_invalid(ppfn) )
+            {
+                ERROR("Expected pfn %"PRI_xen_pfn" to be valid but received type %d",
+                      pfns[i], types[i]);
+                rc = -1;
+                goto err;
+            }
+            break;
+
+        default:
+            if ( ppfn_ready(ppfn) )
+            {
+                ERROR("pfn %"PRI_xen_pfn" already received", pfns[i]);
+                rc = -1;
+                goto err;
+            }
+            else if ( ppfn_invalid(ppfn) )
+            {
+                ERROR("Expected pfn %"PRI_xen_pfn" to be invalid but received type %d",
+                      pfns[i], types[i]);
+                rc = -1;
+                goto err;
+            }
+            else
+            {
+                /* Copy the data in */
+                memcpy(paging->buffer, page_data, PAGE_SIZE);
+                rc = xc_mem_paging_load(ctx->xch, ctx->domid, pfn,
+                                        paging->buffer);
+                if ( rc < 0 )
+                {
+                    PERROR("Failed to load page pfn %"PRI_xen_pfn, pfn);
+                    rc = -1;
+                    goto err;
+                }
+
+                /* Notify the waiting vcpus */
+                if ( ppfn_requested(ppfn) )
+                {
+                    while ( !LIBXC_SLIST_EMPTY(paging->pending_pfns[pfns[i]]) )
+                    {
+                        request = LIBXC_SLIST_FIRST(ppfn);
+                        LIBXC_SLIST_REMOVE_HEAD(paging->pending_pfns[pfns[i]],
+                                                link);
+                        rc = notify_page_populated(paging,
+                                                   pfns[i],
+                                                   request.flags,
+                                                   request.vcpu_id);
+                        if ( rc < 0 )
+                        {
+                            ERROR("Failed to notify page poulated for pfn %"PRI_xen_pfn,
+                                  pfns[i]);
+                            free(request);
+                            rc = -1;
+                            goto err;
+                        }
+                        free(request);
+                    }
+                }
+                mark_ppfn_ready(paging->pending_pfns[pfns[i]]);
+            }
+            break;
+        }
+    }
+
+ err:
+    return rc;
+}
+
+static int handle_postcopy_page_data(struct xc_sr_context *ctx,
+                                     struct xc_sr_record *rec)
+{
+    struct xc_sr_rec_pages_header *pages = rec->data;
+    unsigned pages_of_data;
+    int rc;
+
+    xen_pfn_t *pfns = NULL;
+    uint32_t *types = NULL;
+
+    rc = validate_pages_record(rec);
+    if ( rc )
+        goto err;
+
+    rc = decode_pages_record(ctx, pages, &pfns, &types, &pages_of_data);
+    if ( rc )
+        goto err;
+
+    if ( rec->length != (sizeof(*pages) +
+                         (sizeof(uint64_t) * pages->count) +
+                         (PAGE_SIZE * pages_of_data)) )
+    {
+        ERROR("PAGE_DATA record wrong size: length %u, expected "
+              "%zu + %zu + %lu", rec->length, sizeof(*pages),
+              (sizeof(uint64_t) * pages->count), (PAGE_SIZE * pages_of_data));
+        goto err;
+    }
+
+    rc = process_postcopy_page_data(ctx, pages->count, pfns, types,
+                                    &pages->pfn[pages->count]);
+ err:
+    free(types);
+    free(pfns);
+
+    return rc;
+}
+
+static int process_paging_request(struct xc_sr_restore_paging *paging,
+                                  struct vm_event_req *req)
+{
+    uint64_t pfn = vm_event_req.u.mem_paging.gfn;
+    struct xc_sr_pending_postcopy_request *ppfn;
+    int rc;
+
+    if ( ppfn_invalid(paging->pending_pfns[pfn]) )
+    {
+        ERROR("PFN does not need to be migrated %"PRI_xen_pfn, pfn);
+        rc = -1;
+    }
+    else if ( ppfn_ready(paging->pending_pfns[pfn]) )
+    {
+        /* Page has already been populated, unpause the vcpu immediately */
+        return notify_page_populated(paging, req.u.mem_paging.gfn,
+                                     req.u.mem_paging.flags, req.vcpu_id);
+    }
+    else if ( ppfn_outstanding(paging->pending_pfns[pfn]) )
+    {
+        /* This is the first time the page has been requested */
+        ppfn = malloc(sizeof(struct xc_sr_pending_postcopy_request));
+        ppfn->flags = req.u.mem_paging.flags;
+        ppfn->vcpu_id = req.vcpu_id;
+
+        LIBXC_SLIST_INIT(paging->pending_pfns[pfn]);
+        LIBXC_SLIST_INSERT_HEAD(paging->pending_pfns[pfn], ppfn, link);
+
+        /* XXX FIRE THE REQUEST */
+    }
+    else if ( ppfn_requested(paging->pending_pfns[pfn]) )
+    {
+        /* A request for this page has already been sent */
+        ppfn = malloc(sizeof(struct xc_sr_pending_postcopy_request));
+        ppfn->flags = req.u.mem_paging.flags;
+        ppfn->vcpu_id = req.vcpu_id;
+
+        LIBXC_SLIST_INSERT_HEAD(paging->pending_pfns[pfn], ppfn, link);
+        rc = 0;
+    }
+    return rc;
+}
+
+/*
+ * Populate the remaining pages using postcopy. The domain is already running.
+ * We need to respond to paging events from the guest by sending requests to
+ * the source host. We also continue to recieve records from the source.
+ */
+static int restore_postcopy(struct xc_sr_context* ctx)
+{
+    int fd_flags = 0;
+    fdset readfds;
+    xen_pfn_t fault_buffer[GUEST_MAX_VCPUS];
+    unsigned int buffer_start = 0, buffer_end = 0;
+    int rc, fault_fd, max_fd;
+    vm_event_request_t vm_event_req;
+    vm_event_response_t vm_event_rsp;
+    struct xc_sr_restore_paging *paging = ctx->restore.paging;
+    struct xc_sr_read_record_context rrctx;
+    struct xc_sr_record rec = { 0, 0, NULL };
+
+    read_record_init(&rrctx);
+
+    assert(paging->xce_handle);
+    fault_fd = xenevtchn_fd(xce_handle);
+
+    fd_flags = fcntl(ctx->fd, F_GETFL);
+    if (fd_flags == -1)
+    {
+        PERROR("fcntl(,F_GETFL) failed");
+        rc = -1;
+        goto err;
+    }
+    fd_flags |= O_NONBLOCK;
+    rc = fcntl(ctx->fd, F_SETFL, fd_flags);
+    if (rc == -1)
+    {
+        PERROR("fcntl(,F_SETFL) failed");
+        goto err;
+    }
+    max_fd = ctx->fd > fault_fd ? ctx->fd : fault_fd;
+
+    FD_ZERO(&readfds);
+
+    do
+    {
+        FD_SET(ctx->fd, &readfds);
+        FD_SET(fault_fd, &readfds);
+        rc = select(max, &readfds, &writefds, NULL, NULL);
+        if ( rc == -1 )
+        {
+            PERROR("Failed to select");
+            goto err;
+        }
+
+        if ( FD_ISSET(ctx->fd, &readfds) )
+        {
+            /* Read incoming page data */
+            rc = try_read_record(&rrctx, ctx->fd, &rec);
+            if ( rc && (errno != EAGAIN) && (errno != EWOULDBLOCK) )
+                goto err;
+            }
+            else if ( !rc ) {
+                /* Populate the pages and notify for each waiting vcpu */
+                read_record_destroy(&rrctx);
+                read_record_init(&rrctx);
+                handle_page_data_record(ctx, &rec);
+            }
+        }
+        else if ( FD_ISSET(fault_fd, &readfds) )
+        {
+            /* Handle access to unmigrated page */
+            rc = xenevtchn_pending(paging->xce);
+            if ( rc == -1 )
+            {
+                PERROR("Failed to read port from event channel");
+                rc = -1;
+                goto err;
+            }
+
+            rc = xenevtchn_unmask(paging->xce, port);
+            if ( rc < 0 )
+            {
+                PERROR("Failed to unmask event channel port");
+            }
+            while ( RING_HAS_UNCONSUMED_REQUESTS(paging->back_ring) )
+            {
+                get_request(paging, &vm_event_req);
+                rc = process_paging_request(paging, &vm_event_req);
+            }
+        }
+
+    }
+
+    /* return socket to nonblocking mode */
+    fd_flags = fcntl(paging->fd, F_GETFL);
+    if ( fd_flags == -1 )
+    {
+        PERROR("fcntl(,F_GETFL) failed");
+        rc = -1;
+        goto err;
+    }
+    fd_flags &= ~O_NONBLOCK;
+    rc = fcntl(paging->fd, F_SETFL, fd_flags);
+    if ( rc == -1 )
+    {
+        PERROR("fcntl(,F_SETFL) failed");
+        goto err;
+    }
+
+ err:
+    free(rec.data);
+    read_record_destroy(&rrctx);
+    return rc;
+}
+
 /*
  * Send checkpoint dirty pfn list to primary.
  */
