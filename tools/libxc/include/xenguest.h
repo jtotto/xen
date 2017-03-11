@@ -63,18 +63,25 @@ struct save_callbacks {
      */
     int (*aftercopy)(void* data);
 
-    /* Called after the memory checkpoint has been flushed
-     * out into the network. Typical actions performed in this
-     * callback include:
-     *   (a) send the saved device model state (for HVM guests),
-     *   (b) wait for checkpoint ack
-     *   (c) release the network output buffer pertaining to the acked checkpoint.
-     *   (c) sleep for the checkpoint interval.
-     *
-     * returns:
-     * 0: terminate checkpointing gracefully
-     * 1: take another checkpoint */
-    int (*checkpoint)(void* data);
+    /* Checkpointing and postcopy live migration are mutually exclusive. */
+    union {
+        /* Called after the memory checkpoint has been flushed
+         * out into the network. Typical actions performed in this
+         * callback include:
+         *   (a) send the saved device model state (for HVM guests),
+         *   (b) wait for checkpoint ack
+         *   (c) release the network output buffer pertaining to the acked
+         *       checkpoint.
+         *   (c) sleep for the checkpoint interval.
+         *
+         * returns:
+         * 0: terminate checkpointing gracefully
+         * 1: take another checkpoint */
+        int (*checkpoint)(void* data);
+
+        /* XXX */
+        int (*postcopy_transition)(void *data);
+    };
 
     /*
      * Called after the checkpoint callback.
@@ -125,12 +132,18 @@ struct restore_callbacks {
      */
     int (*aftercopy)(void* data);
 
-    /* A checkpoint record has been found in the stream.
-     * returns: */
+    /* Checkpointing and postcopy live migration are mutually exclusive. */
+    union {
+        /* A checkpoint record has been found in the stream.
+         * returns: */
 #define XGR_CHECKPOINT_ERROR    0 /* Terminate processing */
 #define XGR_CHECKPOINT_SUCCESS  1 /* Continue reading more data from the stream */
 #define XGR_CHECKPOINT_FAILOVER 2 /* Failover and resume VM */
-    int (*checkpoint)(void* data);
+        int (*checkpoint)(void* data);
+
+        /* XXX */
+        int (*postcopy_transition)(void *data);
+    };
 
     /*
      * Called after the checkpoint callback.

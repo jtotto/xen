@@ -92,6 +92,9 @@ static int write_hvm_params(struct xc_sr_context *ctx)
     unsigned int i;
     int rc;
 
+    DECLARE_HYPERCALL_BUFFER_SHADOW(unsigned long, dirty_bitmap,
+                                    &ctx->save.dirty_bitmap_hbuf);
+
     for ( i = 0; i < ARRAY_SIZE(params); i++ )
     {
         uint32_t index = params[i];
@@ -106,6 +109,15 @@ static int write_hvm_params(struct xc_sr_context *ctx)
 
         if ( value != 0 )
         {
+            if ( ctx->postcopy_requested &&
+                 ( index == HVM_PARAM_CONSOLE_PFN ||
+                   index == HVM_PARAM_STORE_PFN ||
+                   index == HVM_PARAM_IOREQ_PFN ||
+                   index == HVM_PARAM_BUFIOREQ_PFN ||
+                   index == HVM_PARAM_PAGING_RING_PFN ) &&
+                 test_and_clear_bit(value, dirty_bitmap) )
+                --ctx->save.nr_final_dirty_pages;
+
             entries[hdr.count].index = index;
             entries[hdr.count].value = value;
             hdr.count++;

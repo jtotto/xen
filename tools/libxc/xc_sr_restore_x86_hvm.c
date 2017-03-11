@@ -27,6 +27,27 @@ static int handle_hvm_context(struct xc_sr_context *ctx,
     return 0;
 }
 
+static int handle_hvm_magic_page(struct xc_sr_context *ctx,
+                                 struct xc_sr_rec_hvm_params_entry *entry)
+{
+    int rc;
+    xen_pfn_t pfn = entry->value;
+
+    if ( ctx->restore.postcopy )
+    {
+        rc = populate_pfns(ctx, 1, &pfn, NULL);
+        if ( rc )
+            return rc;
+    }
+
+    if ( entry->index != HVM_PARAM_PAGING_RING_PFN )
+    {
+        xc_clear_domain_page(ctx->xch, ctx->domid, pfn);
+    }
+
+    return 0;
+}
+
 /*
  * Process an HVM_PARAMS record from the stream.
  */
@@ -52,16 +73,27 @@ static int handle_hvm_params(struct xc_sr_context *ctx,
         {
         case HVM_PARAM_CONSOLE_PFN:
             ctx->restore.console_gfn = entry->value;
-            xc_clear_domain_page(xch, ctx->domid, entry->value);
+            rc = handle_hvm_magic_page(ctx, entry);
             break;
         case HVM_PARAM_STORE_PFN:
             ctx->restore.xenstore_gfn = entry->value;
-            xc_clear_domain_page(xch, ctx->domid, entry->value);
+            rc = handle_hvm_magic_page(ctx, entry);
+            break;
+        case HVM_PARAM_PAGING_RING_PFN:
+            ctx->restore.paging_ring_gfn = entry->value;
+            rc = handle_hvm_magic_page(ctx, entry);
             break;
         case HVM_PARAM_IOREQ_PFN:
         case HVM_PARAM_BUFIOREQ_PFN:
-            xc_clear_domain_page(xch, ctx->domid, entry->value);
+            rc = handle_hvm_magic_page(ctx, entry);
             break;
+        }
+
+        if ( rc )
+        {
+            PERROR("populate/clear magic HVM page %"PRId64" = 0x%016"PRIx64,
+                   entry->index, entry->value);
+            return rc;
         }
 
         rc = xc_hvm_param_set(xch, ctx->domid, entry->index, entry->value);

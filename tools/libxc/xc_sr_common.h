@@ -10,6 +10,8 @@
 
 #include "xc_sr_stream_format.h"
 
+#include "_libxc_list.h"
+
 /* String representation of Domain Header types. */
 const char *dhdr_type_to_str(uint32_t type);
 
@@ -172,6 +174,17 @@ struct xc_sr_x86_pv_restore_vcpu
     size_t basicsz, extdsz, xsavesz, msrsz;
 };
 
+/* Paging request fields needed to respond to requests out of order. */
+struct xc_sr_pending_postcopy_request
+{
+    uint32_t flags;
+    uint32_t vcpu_id;
+
+    LIBXC_SLIST_ENTRY(struct xc_sr_pending_postcopy_request) link;
+};
+
+LIBXC_SLIST_HEAD(xc_sr_pending_postcopy_requests);
+
 struct xc_sr_context
 {
     xc_interface *xch;
@@ -209,8 +222,8 @@ struct xc_sr_context
 
             enum {
                 XC_SR_SAVE_BATCH_PRECOPY_PAGE,
-                XC_SR_SAVE_BATCH_POSTCOPY_PAGE,
-                XC_SR_SAVE_BATCH_POSTCOPY_PFN
+                XC_SR_SAVE_BATCH_POSTCOPY_PFN,
+                XC_SR_SAVE_BATCH_POSTCOPY_PAGE
             } batch_type;
             xen_pfn_t *batch_pfns;
             unsigned nr_batch_pfns;
@@ -236,6 +249,29 @@ struct xc_sr_context
             uint32_t guest_type;
             uint32_t guest_page_size;
 
+            /* Is this a postcopy migration? */
+            bool postcopy;
+
+            struct xc_sr_restore_paging
+            {
+                xenevtchn_handle *xce_handle;
+                int port;
+                vm_event_back_ring_t back_ring;
+                uint32_t evtchn_port;
+                void *ring_page;
+
+                struct xc_sr_pending_postcopy_requests *pending_pfns;
+                unsigned nr_pending_pfns;
+                void *buffer;
+
+                /* For teardown. */
+                bool evtchn_bound, evtchn_opened, paging_enabled, buffer_locked;
+
+                /* So we can sanity-check the sequence of postcopy records in
+                 * the stream. */
+                bool ready;
+            } paging;
+
             /* Plain VM, or checkpoints over time. */
             int checkpointed;
 
@@ -259,7 +295,7 @@ struct xc_sr_context
              * INPUT:  evtchn & domid
              * OUTPUT: gfn
              */
-            xen_pfn_t    xenstore_gfn,    console_gfn;
+            xen_pfn_t    xenstore_gfn,    console_gfn,      paging_ring_gfn;
             unsigned int xenstore_evtchn, console_evtchn;
             domid_t      xenstore_domid,  console_domid;
 
@@ -430,9 +466,6 @@ int validate_pages_record(struct xc_sr_record *rec);
  */
 int populate_pfns(struct xc_sr_context *ctx, unsigned count,
                   const xen_pfn_t *original_pfns, const uint32_t *types);
-
-/* XXX */
-int postcopy_clear_page(struct xc_sr_context *ctx, xen_pfn_t pfn);
 
 #endif
 /*

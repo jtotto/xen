@@ -194,42 +194,33 @@ int populate_pfns(struct xc_sr_context *ctx, unsigned count,
     return rc;
 }
 
-/*
- * Given a list of pfns, their types, and a block of page data from the
- * stream, populate and record their types, map the relevant subset and copy
- * the data into the guest.
- */
-static int process_page_data(struct xc_sr_context *ctx, unsigned count,
-                             xen_pfn_t *pfns, uint32_t *types, void *page_data)
+static void set_page_types(struct xc_sr_context *ctx, unsigned count,
+                           xen_pfn_t *pfns, uint32_t *types)
 {
-    xc_interface *xch = ctx->xch;
-    xen_pfn_t *mfns = malloc(count * sizeof(*mfns));
-    int *map_errs = malloc(count * sizeof(*map_errs));
-    int rc;
-    void *mapping = NULL, *guest_page = NULL;
-    unsigned i,    /* i indexes the pfns from the record. */
-        j,         /* j indexes the subset of pfns we decide to map. */
-        nr_pages = 0;
+    unsigned i;
 
-    if ( !mfns || !map_errs )
+    for ( i = 0; i < count; ++i )
+        ctx->restore.ops.set_page_type(ctx, pfns[i], types[i]);
+}
+
+static int filter_pages(struct xc_sr_context *ctx, unsigned count,
+                        xen_pfn_t *pfns, uint32_t *types,
+                        /* OUT */ unsigned *nr_pages,
+                        /* OUT */ xen_pfn_t **bpfns)
+{
+    unsigned i;
+
+    *nr_pages = 0;
+    *bpfns = malloc(count * sizeof(*bpfns));
+    if ( !(*bpfns) )
     {
-        rc = -1;
         ERROR("Failed to allocate %zu bytes to process page data",
-              count * (sizeof(*mfns) + sizeof(*map_errs)));
-        goto err;
-    }
-
-    rc = populate_pfns(ctx, count, pfns, types);
-    if ( rc )
-    {
-        ERROR("Failed to populate pfns for batch of %u pages", count);
-        goto err;
+              count * (sizeof(*bpfns)));
+        return -1;
     }
 
     for ( i = 0; i < count; ++i )
     {
-        ctx->restore.ops.set_page_type(ctx, pfns[i], types[i]);
-
         switch ( types[i] )
         {
         case XEN_DOMCTL_PFINFO_NOTAB:
@@ -246,10 +237,58 @@ static int process_page_data(struct xc_sr_context *ctx, unsigned count,
         case XEN_DOMCTL_PFINFO_L4TAB:
         case XEN_DOMCTL_PFINFO_L4TAB | XEN_DOMCTL_PFINFO_LPINTAB:
 
-            mfns[nr_pages++] = ctx->restore.ops.pfn_to_gfn(ctx, pfns[i]);
+            *bpfns[*nr_pages++] = pfns[i];
             break;
         }
     }
+
+    return 0;
+}
+
+/*
+ * Given a list of pfns, their types, and a block of page data from the
+ * stream, populate and record their types, map the relevant subset and copy
+ * the data into the guest.
+ */
+static int process_page_data(struct xc_sr_context *ctx, unsigned count,
+                             xen_pfn_t *pfns, uint32_t *types, void *page_data)
+{
+    xc_interface *xch = ctx->xch;
+    xen_pfn_t *mfns = NULL;
+    int *map_errs = malloc(count * sizeof(*map_errs));
+    int rc;
+    void *mapping = NULL, *guest_page = NULL;
+    unsigned i,    /* i indexes the pfns from the record. */
+        j,         /* j indexes the subset of pfns we decide to map. */
+        nr_pages;
+
+    if ( !map_errs )
+    {
+        rc = -1;
+        ERROR("Failed to allocate %zu bytes to process page data",
+              count * sizeof(*map_errs));
+        goto err;
+    }
+
+    rc = populate_pfns(ctx, count, pfns, types);
+    if ( rc )
+    {
+        ERROR("Failed to populate pfns for batch of %u pages", count);
+        goto err;
+    }
+
+    set_page_types(ctx, count, pfns, types);
+
+    rc = filter_pages(ctx, count, pfns, types, &nr_pages, &mfns);
+    if ( rc )
+    {
+        ERROR("Failed to filter mfns for batch of %u pages", count);
+        goto err;
+    }
+
+    /* Map physically backed pfns ('bpfns') to their gmfns. */
+    for ( i = 0; i < nr_pages; ++i )
+        mfns[i] = ctx->restore.ops.pfn_to_gfn(ctx, mfns[i]);
 
     /* Nothing to do? */
     if ( nr_pages == 0 )
@@ -326,26 +365,23 @@ static int process_page_data(struct xc_sr_context *ctx, unsigned count,
 }
 
 /*
- * Validate a PAGE_DATA record from the stream, and pass the results to
- * process_page_data() to actually perform the legwork.
+ * Given a PAGE_DATA or POSTCOPY_PFNS record, decode each packed entry into its
+ * encoded pfn and type.
  */
-static int handle_page_data(struct xc_sr_context *ctx, struct xc_sr_record *rec)
+static int decode_pages_record(struct xc_sr_context *ctx,
+                               struct xc_sr_rec_pages_header *pages,
+                               /* OUT */ xen_pfn_t **pfns,
+                               /* OUT */ uint32_t **types,
+                               /* OUT */ unsigned *pages_of_data)
 {
-    xc_interface *xch = ctx->xch;
-    struct xc_sr_rec_page_data_header *pages = rec->data;
-    unsigned i, pages_of_data = 0;
-    int rc;
+    unsigned i;
+    int rc = -1;
+    xen_pfn_t pfn;
+    uint32_t type;
 
-    xen_pfn_t *pfns = NULL, pfn;
-    uint32_t *types = NULL, type;
-
-    rc = validate_pages_record(rec);
-    if ( rc )
-        goto err;
-
-    rc = -1;
-    pfns = malloc(pages->count * sizeof(*pfns));
-    types = malloc(pages->count * sizeof(*types));
+    *pfns = malloc(pages->count * sizeof(*pfns));
+    *types = malloc(pages->count * sizeof(*types));
+    *pages_of_data = 0;
     if ( !pfns || !types )
     {
         ERROR("Unable to allocate enough memory for %u pfns",
@@ -371,13 +407,41 @@ static int handle_page_data(struct xc_sr_context *ctx, struct xc_sr_record *rec)
             goto err;
         }
         else if ( type < XEN_DOMCTL_PFINFO_BROKEN )
-            /* NOTAB and all L1 through L4 tables (including pinned) should
-             * have a page worth of data in the record. */
-            pages_of_data++;
+            /* NOTAB and all L1 through L4 tables (including pinned) require the
+             * migration of a page of real data. */
+            *pages_of_data++;
 
         pfns[i] = pfn;
         types[i] = type;
     }
+
+ err:
+    free(*pfns);
+    free(*types);
+
+    return rc;
+}
+
+/*
+ * Validate a PAGE_DATA record from the stream, and pass the results to
+ * process_page_data() to actually perform the legwork.
+ */
+static int handle_page_data(struct xc_sr_context *ctx, struct xc_sr_record *rec)
+{
+    struct xc_sr_rec_pages_header *pages = rec->data;
+    unsigned pages_of_data;
+    int rc;
+
+    xen_pfn_t *pfns = NULL;
+    uint32_t *types = NULL;
+
+    rc = validate_pages_record(rec);
+    if ( rc )
+        goto err;
+
+    rc = decode_pages_record(ctx, pages, &pfns, &types, &pages_of_data);
+    if ( rc )
+        goto err;
 
     if ( rec->length != (sizeof(*pages) +
                          (sizeof(uint64_t) * pages->count) +
@@ -396,6 +460,338 @@ static int handle_page_data(struct xc_sr_context *ctx, struct xc_sr_record *rec)
     free(pfns);
 
     return rc;
+}
+
+/* The address of this structure is used as a sentinel entry in
+ * paging->pending_pfns to indicate that the backing page for the entry pfn is
+ * outstanding and no request for it has yet been made. */
+static struct xc_sr_pending_postcopy_request outstanding_sentinel;
+
+/* The address of this structure is used as a sentinel entry in
+ * paging->pending_pfns to indicate that the page is ready and requests for it
+ * can be satisfied immediately. */
+static struct xc_sr_pending_postcopy_requests ready_sentinel;
+
+/* An empty list is used in paging->pending_pfns to indicate that the given pfn
+ * never at any point needed to be postcopy-migrated. */
+
+static inline bool ppfn_outstanding(
+    struct xc_sr_pending_postcopy_requests *ppfn)
+{
+    return LIBXC_SLIST_FIRST(ppfn) == &outstanding_sentinel;
+}
+
+static inline bool ppfn_ready(struct xc_sr_pending_postcopy_requests *ppfn)
+{
+    return LIBXC_SLIST_FIRST(ppfn) == &ready_sentinel;
+}
+
+static inline bool ppfn_invalid(struct xc_sr_pending_postcopy_requests *ppfn)
+{
+    return LIBXC_SLIST_EMPTY(ppfn);
+}
+
+static inline bool ppfn_requested(struct xc_sr_pending_postcopy_requests *ppfn)
+{
+    return !ppfn_invalid(ppfn) &&
+           !ppfn_outstanding(ppfn) &&
+           !ppfn_ready(ppfn);
+}
+
+static void mark_ppfn_outstanding(struct xc_sr_pending_postcopy_requests *ppfn)
+{
+    assert(ppfn_invalid(ppfn));
+    LIBXC_SLIST_INSERT_HEAD(ppfn, &outstanding_sentinel, link);
+}
+
+/* Trust the caller to have appropriately cleaned up the request list first. */
+static void mark_ppfn_ready(struct xc_sr_pending_postcopy_requests *ppfn)
+{
+    assert(ppfn_outstanding(ppfn) || ppfn_requested(ppfn));
+    LIBXC_SLIST_INIT(ppfn);
+    LIBXC_SLIST_INSERT_HEAD(ppfn, &ready_sentinel);
+}
+
+/* XXX postcopy begins */
+static int postcopy_paging_setup(struct xc_sr_context *ctx)
+{
+    int rc;
+    struct xc_sr_restore_paging *paging = &ctx->restore.paging;
+    xc_interface *xch = ctx->xch;
+
+    /* Sanity-check the migration stream. */
+    if ( !ctx->postcopy )
+    {
+        ERROR("Received POSTCOPY_PFNS_BEGIN before POSTCOPY_BEGIN");
+        return -1;
+    }
+
+    paging->ring_page = xc_vm_event_enable(xch, ctx->domid,
+                                           HVM_PARAM_PAGING_RING_PFN,
+                                           &paging->evtchn_port);
+    if ( !paging->ring_page )
+    {
+        PERROR("Failed to enable paging");
+        return -1;
+    }
+    paging->paging_enabled = true;
+
+    paging->xce_handle = xenevtchn_open(NULL, 0);
+    if (!paging->xce_handle )
+    {
+        ERROR("Failed to open paging evtchn");
+        return -1;
+    }
+    paging->evtchn_opened = true;
+
+    rc = xenevtchn_bind_interdomain(paging->xce_handle, ctx->domid,
+                                    paging->evtchn_port);
+    if ( rc < 0 )
+    {
+        ERROR("Failed to bind paging evtchn");
+        return rc;
+    }
+    paging->evtchn_bound = true;
+    paging->port = rc;
+
+    SHARED_RING_INIT((vm_event_sring_t *)paging->ring_page);
+    BACK_RING_INIT(&paging->back_ring, (vm_event_sring_t *)paging->ring_page,
+                   XC_PAGE_SIZE);
+
+    errno = posix_memalign(&paging->buffer, XC_PAGE_SIZE, XC_PAGE_SIZE);
+    if ( errno != 0 )
+    {
+        PERROR("Failed to allocate paging buffer");
+        return -1;
+    }
+
+    rc = mlock(paging->buffer, XC_PAGE_SIZE);
+    if ( rc < 0 )
+    {
+        PERROR("Failed to lock paging buffer");
+        return rc;
+    }
+    paging->buffer_locked = true;
+
+    /* This assumes for convenience that a zeroed-out LIBXC_SLIST_HEAD is used
+     * to represent an empty list. */
+    paging->pending_pfns = calloc(ctx->restore.p2m_size,
+                                  sizeof(*paging->pending_pfns));
+    if ( !paging->pending_pfns )
+    {
+        PERROR("Failed to allocate pending pfns table");
+        return -1;
+    }
+
+    paging->ready = true;
+
+    return 0;
+}
+
+static void postcopy_paging_cleanup(struct xc_sr_context *ctx)
+{
+    int rc;
+    struct xc_sr_restore_paging *paging = &ctx->restore.paging;
+    xc_interface *xch = ctx->xch;
+    struct xc_sr_pending_postcopy_requests *ppfn;
+    struct xc_sr_pending_postcopy_request *preq, *next_preq;
+    xen_pfn_t p;
+
+    if ( paging->ring_page )
+        munmap(paging->ring_page, XC_PAGE_SIZE);
+
+    if ( paging->paging_enabled )
+    {
+        rc = xc_vm_event_control(xch, ctx->domid, XC_VM_EVENT_DISABLE,
+                                 XEN_DOMCTL_VM_EVENT_OP_PAGING, paging->port);
+        if ( rc != 0 )
+            ERROR("Failed to disable paging");
+    }
+
+    if ( paging->evtchn_bound )
+    {
+        rc = xenevtchn_unbind(xch, paging->port);
+        if ( rc != 0 )
+            ERROR("Failed to unbind event port");
+    }
+
+    if ( paging->evtchn_opened )
+    {
+        rc = xenevtchn_close(xch);
+        if ( rc != 0 )
+            ERROR("Failed to close event channel");
+    }
+
+    if ( paging->buffer )
+    {
+        if ( paging->buffer_locked )
+            munlock(paging->buffer, PAGE_SIZE);
+
+        free(paging->buffer);
+    }
+
+    /* In the unhappy case, we need to scan the entire pending_pfns table to
+     * clean up any contained pending request lists. */
+    if ( paging->nr_pending_pfns )
+    {
+        for ( p = 0; p < ctx->restore.p2m_size; ++p )
+        {
+            ppfn = &paging->pending_pfns[p];
+            if ( ppfn_requested(ppfn) )
+            {
+                LIBXC_SLIST_FOREACH_SAFE(preq, ppfn, link, next_preq)
+                {
+                    free(preq);
+                }
+            }
+        }
+    }
+}
+
+static int process_postcopy_pfns(struct xc_sr_context *ctx, unsigned count,
+                                 xen_pfn_t *pfns, uint32_t *types)
+{
+    xc_interface *xch = ctx->xch;
+    struct xc_sr_restore_paging *paging = &ctx->restore.paging;
+    struct xc_sr_pending_postcopy_requests *ppfn;
+    xen_pfn_t *bpfns = NULL, bpfn;
+    int rc;
+    unsigned i, nr_pages;
+
+    if ( !map_errs )
+    {
+        rc = -1;
+        ERROR("Failed to allocate %zu bytes to process page data",
+              count * sizeof(*map_errs));
+        goto err;
+    }
+
+    rc = populate_pfns(ctx, count, pfns, types);
+    if ( rc )
+    {
+        ERROR("Failed to populate pfns for batch of %u pages", count);
+        goto err;
+    }
+
+    set_page_types(ctx, count, pfns, types);
+
+    rc = filter_pages(ctx, count, pfns, types, &nr_pages, &bpfns);
+    if ( rc )
+    {
+        ERROR("Failed to filter mfns for batch of %u pages", count);
+        goto err;
+    }
+
+    /* Nothing to do? */
+    if ( nr_pages == 0 )
+        goto done;
+
+    /* Fully evict all backed pages in the batch. */
+    for ( i = 0; i < nr_pages; ++i )
+    {
+        bpfn = bpfns[i];
+        rc = -1;
+
+        if ( bpfn >= ctx->restore.p2m_size )
+        {
+            ERROR("Impossibly high postcopy pfn %"PRI_xen_pfn, bpfn);
+            goto err;
+        }
+
+        ppfn = &paging->pending_pfns[bpfn];
+
+        /* We should never see the same pfn twice at this stage.  */
+        if ( !ppfn_invalid(ppfn) )
+        {
+            ERROR("Duplicate postcopy pfn %"PRI_xen_pfn, bpfn);
+            goto err;
+        }
+
+        /* We now consider this pfn 'outstanding' - pending, and not yet
+         * requested. */
+        mark_ppfn_outstanding(ppfn);
+        ++paging->nr_pending_pfns;
+
+        /* Neither nomination nor eviction can be permitted to fail - the guest
+         * isn't yet running, so a failure would imply a foreign or hypervisor
+         * mapping on the page, and that would be bogus because the migration
+         * isn't yet complete. */
+        rc = xc_mem_paging_nominate(xch, ctx->domid, bpfn);
+        if ( rc < 0 )
+        {
+            PERROR("Error nominating postcopy pfn %"PRI_xen_pfn, bpfn);
+            goto err;
+        }
+
+        rc = xc_mem_paging_evict(xch, ctx->domid, bpfn);
+        if ( rc < 0 )
+        {
+            PERROR("Error evicting postcopy pfn %"PRI_xen_pfn, bpfn);
+            goto err;
+        }
+    }
+
+ done:
+    rc = 0;
+
+ err:
+    free(bpfns);
+
+    return rc;
+}
+
+static int handle_postcopy_pfns(struct xc_sr_context *ctx,
+                                struct xc_sr_record *rec)
+{
+    struct xc_sr_rec_pages_header *pages = rec->data;
+    unsigned pages_of_data;
+    int rc;
+    xen_pfn_t *pfns = NULL;
+    uint32_t *types = NULL;
+
+    /* Sanity-check the migration stream. */
+    if ( !ctx->restore.paging.ready )
+    {
+        ERROR("Received POSTCOPY_PFNS record before POSTCOPY_PFNS_BEGIN");
+        rc = -1;
+        goto err;
+    }
+
+    rc = validate_pages_record(rec);
+    if ( rc )
+        goto err;
+
+    rc = decode_pages_record(ctx, pages, &pfns, &types, &pages_of_data);
+    if ( rc )
+        goto err;
+
+    if ( rec->length != (sizeof(*pages) + (sizeof(uint64_t) * pages->count)) )
+    {
+        ERROR("POSTCOPY_PFNS record wrong size: length %u, expected "
+              "%zu + %zu", rec->length, sizeof(*pages),
+              (sizeof(uint64_t) * pages->count));
+        goto err;
+    }
+
+    rc = process_postcopy_pfns(ctx, pages->count, pfns, types);
+
+ err:
+    free(types);
+    free(pfns);
+
+    return rc;
+}
+
+static int handle_postcopy_transition(struct xc_sr_context *ctx)
+{
+    /* Sanity-check the migration stream. */
+    if ( !ctx->restore.paging.ready )
+    {
+        ERROR("Received POSTCOPY_TRANSITION record before POSTCOPY_PFNS_BEGIN");
+        return -1;
+    }
+
+    /* XXX */
 }
 
 /*
@@ -636,6 +1032,25 @@ static int process_record(struct xc_sr_context *ctx, struct xc_sr_record *rec)
         rc = handle_checkpoint(ctx);
         break;
 
+    case REC_TYPE_POSTCOPY_BEGIN:
+        if ( ctx->postcopy )
+            rc = -1;
+        else
+            ctx->postcopy = true;
+        break;
+
+    case REC_TYPE_POSTCOPY_PFNS_BEGIN:
+        rc = postcopy_paging_setup(ctx);
+        break;
+
+    case REC_TYPE_POSTCOPY_PFNS:
+        rc = handle_postcopy_pfns(ctx, rec);
+        break;
+
+    case REC_TYPE_POSTCOPY_TRANSITION:
+        rc = handle_postcopy_transition(ctx);
+        break;
+
     default:
         rc = ctx->restore.ops.process_record(ctx, rec);
         break;
@@ -708,6 +1123,10 @@ static void cleanup(struct xc_sr_context *ctx)
     if ( ctx->restore.checkpointed == XC_MIG_STREAM_COLO )
         xc_hypercall_buffer_free_pages(xch, dirty_bitmap,
                                    NRPAGES(bitmap_size(ctx->restore.p2m_size)));
+
+    if ( ctx->postcopy )
+        postcopy_paging_cleanup(ctx);
+
     free(ctx->restore.buffered_records);
     free(ctx->restore.populated_pfns);
     if ( ctx->restore.ops.cleanup(ctx) )
