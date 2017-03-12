@@ -3712,6 +3712,19 @@ struct libxl__domain_create_state {
     int send_back_fd;
     libxl_domain_restore_params restore_params;
     uint32_t domid_soft_reset;
+    struct {
+        int rc;
+
+        /* We have started but not yet completed postcopy resumption of the
+         * guest. */
+        unsigned resuming : 1;
+        /* Mutually exclusive with resuming - we have started _and_ finished
+         * resumption of the guest without incident. */
+        unsigned resumed  : 1;
+
+        /* The postcopy stream has successfully completed. */
+        unsigned stream_done : 1;
+    } postcopy;
     libxl__domain_create_cb *callback;
     libxl_asyncprogress_how aop_console_how;
     /* private to domain_create */

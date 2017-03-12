@@ -1110,6 +1110,19 @@ static void domcreate_bootloader_done(libxl__egc *egc,
             libxl__remus_restore_setup(egc, dcs);
             /* fall through */
         case LIBXL_CHECKPOINTED_STREAM_NONE:
+            /* When the restore helper initiates the postcopy transition, pick
+             * up in domcreate_postcopy_transition_callback() and immediately
+             * hand control back to the stream reader. */
+            callbacks->postcopy_transition =
+                domcreate_postcopy_transition_callback;
+
+            /* When the stream reader is finished reading the postcopy
+             * transition, we'll find out in the
+             * domcreate_postcopy_transition_complete_callback(), where we'll
+             * hand control of the stream back to the libxc helper. */
+            dcs->srs.postcopy_transition_callback =
+                domcreate_postcopy_transition_complete_callback;
+
             libxl__stream_read_start(egc, &dcs->srs);
         }
         return;
@@ -1117,6 +1130,69 @@ static void domcreate_bootloader_done(libxl__egc *egc,
 
  out:
     domcreate_stream_done(egc, &dcs->srs, rc);
+}
+
+/*----- postcopy live migration -----*/
+
+static int domcreate_postcopy_transition_callback(void *user)
+{
+    libxl__save_helper_state *shs = user;
+    libxl__domain_create_state *dcs = shs->caller_state;
+    libxl__stream_read_state *srs = &dcs->srs;
+
+    libxl__stream_read_start_postcopy_transition(shs->egc, srs);
+}
+
+void domcreate_postcopy_transition_complete_callback(
+    libxl__egc *egc, libxl__stream_read_state *srs, int rc)
+{
+    libxl__domain_create_state *dcs = srs->dcs;
+
+    if (!rc)
+        srs->completion_callback = domcreate_postcopy_stream_done;
+
+     /* If all is well (for now) we'll find out about the eventual termination
+      * of the restore helper/stream through domcreate_postcopy_stream_done().
+      * Otherwise, we'll find out sooner through domcreate_stream_done(). */
+    libxl__xc_domain_saverestore_async_callback_done(egc, &srs->shs, !rc);
+
+    if (!rc) {
+        /* In parallel, resume the guest. */
+        dcs->postcopy.resuming = true;
+        domcreate_stream_done(egc, srs, 0);
+    }
+}
+
+static void domcreate_postcopy_stream_done(libxl__egc *egc,
+                                           libxl__stream_read_state *srs,
+                                           int ret)
+{
+    libxl__domain_create_state *dcs = srs->dcs;
+
+    assert(!dcs->postcopy.stream_done);
+
+    if (dcs->postcopy.resumed) {
+        /* This is the expected case - resumption completed, and some time later
+         * the final postcopy pages were migrated and the stream wrapped up.
+         * We're now totally done! */
+        dcs->callback(egc, dcs, ret, dcs->guest_domid);
+    } else if (dcs->postcopy.rc) {
+        /* The resumption failed. */
+        dcs->callback(egc, dcs, dcs->postcopy.rc, dcs->guest_domid);
+    } else if (ret) {
+        /* The stream failed, and the resumption is still in progress. */
+        assert(dcs->postcopy.resuming);
+
+        /* Stash our return code for resumption to find when it completes. */
+        dcs->postcopy.rc = ret;
+    } else {
+        /* We've successfully completed, but the resumption is still humming
+         * away. */
+        assert(dcs->postcopy.resuming);
+        dcs->postcopy.stream_done = true;
+
+        /* Just let it finish.  Nothing to do for now. */
+    }
 }
 
 void libxl__srm_callout_callback_restore_results(xen_pfn_t store_mfn,
@@ -1570,7 +1646,8 @@ static void domcreate_complete(libxl__egc *egc,
         }
         dcs->guest_domid = -1;
     }
-    dcs->callback(egc, dcs, rc, dcs->guest_domid);
+
+    domcreate_finish(egc, dcs, rc);
 }
 
 static void domcreate_destruction_cb(libxl__egc *egc,
@@ -1583,7 +1660,45 @@ static void domcreate_destruction_cb(libxl__egc *egc,
     if (rc)
         LOGD(ERROR, dds->domid, "unable to destroy domain following failed creation");
 
-    dcs->callback(egc, dcs, ERROR_FAIL, dcs->guest_domid);
+    domcreate_finish(egc, dcs, ERROR_FAIL);
+}
+
+static void domcreate_finish(libxl__egc *egc,
+                             libxl__domain_create_state *dcs,
+                             int rc)
+{
+    if (dcs->postcopy.resuming) {
+        dcs->postcopy.resuming = false;
+
+        if (dcs->postcopy.rc) {
+            /* The stream failed.  Now that we're done, tie things up by
+             * reporting the stream's result. */
+            dcs->callback(egc, dcs, dcs->postcopy.rc, dcs->guest_domid);
+        } else {
+            /* If we haven't yet failed, try to unpause the guest. */
+            rc = rc ?: libxl_domain_unpause(CTX, dcs->guest_domid);
+
+            if (dcs->postcopy.stream_done) {
+                /* The stream finished successfully, so we can report our local
+                 * result as the overall result. */
+                dcs->callback(egc, dcs, rc, dcs->guest_domid);
+            } else if (rc) {
+                /* The stream isn't done yet, but we failed.  Tell it to bail,
+                 * and stash our return code for the postcopy stream completion
+                 * callback to find. */
+                dcs->postcopy.rc = rc;
+
+                libxl__stream_read_abort(egc, &dcs->sws, -1);
+            } else {
+                dcs->postcopy.resumed = true;
+            }
+        }
+    } else {
+        /* If we aren't presently in the process of completing a postcopy
+         * resumption (the norm), everything is all cleaned up and we can report
+         * our result directly. */
+        dcs->callback(egc, dcs, rc, dcs->guest_domid);
+    }
 }
 
 /*----- application-facing domain creation interface -----*/

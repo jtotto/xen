@@ -279,15 +279,14 @@ int libxl__domain_suspend_should_begin_postcopy(void *user)
 }
 
 static void postcopy_transition_done(libxl__egc *egc,
-                                     libxl__stream_write_state *sws,
-                                     int rc);
+                                     libxl__stream_write_state *sws, int rc);
 
 static void libxl__domain_suspend_postcopy_transition_callback(void *user)
 {
     libxl__save_helper_state *shs = user;
     libxl__stream_write_state *sws = CONTAINER_OF(shs, *sws, shs);
-    sws->checkpoint_callback = postcopy_transition_done;
-    libxl__stream_write_start_postcopy_transition(egc, sws);
+    sws->postcopy_transition_callback = postcopy_transition_done;
+    libxl__stream_write_start_postcopy_transition(shs->egc, sws);
 }
 
 static void postcopy_transition_done(libxl__egc *egc,
@@ -295,7 +294,11 @@ static void postcopy_transition_done(libxl__egc *egc,
                                      int rc)
 {
     libxl__domain_save_state *dss = sws->dss;
-    dss->postcopy_transition_completed = true;
+
+    /* When we mark the postcopy transition as completed, we give up hope of
+     * recovering the guest in the event of a failure because it may have been
+     * permitted to execute at the destination. */
+    dss->postcopy_transition_completed = !rc;
     libxl__xc_domain_saverestore_async_callback_done(egc, &sws->shs, !rc);
 }
 
