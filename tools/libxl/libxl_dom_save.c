@@ -287,7 +287,7 @@ static void libxl__domain_suspend_postcopy_transition_callback(void *user)
     libxl__save_helper_state *shs = user;
     libxl__stream_write_state *sws = CONTAINER_OF(shs, *sws, shs);
     sws->checkpoint_callback = postcopy_transition_done;
-    libxl__stream_write_postcopy_transition(egc, sws);
+    libxl__stream_write_start_postcopy_transition(egc, sws);
 }
 
 static void postcopy_transition_done(libxl__egc *egc,

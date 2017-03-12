@@ -172,6 +172,12 @@ static void checkpoint_state_done(libxl__egc *egc,
 
 /*----- Helpers -----*/
 
+static inline bool stream_in_checkpoint(libxl__stream_read_state *stream)
+{
+    return stream->phase == SRS_PHASE_CHECKPOINT_BUFFERING ||
+           stream->phase == SRS_PHASE_CHECKPOINT_UNBUFFERING;
+}
+
 /* Helper to set up reading some data from the stream. */
 static int setup_read(libxl__stream_read_state *stream,
                       const char *what, void *ptr, size_t nr_bytes,
@@ -210,12 +216,12 @@ void libxl__stream_read_init(libxl__stream_read_state *stream)
 
     stream->rc = 0;
     stream->running = false;
-    stream->in_checkpoint = false;
     stream->sync_teardown = false;
     FILLZERO(stream->dc);
     FILLZERO(stream->hdr);
     LIBXL_STAILQ_INIT(&stream->record_queue);
     stream->phase = SRS_PHASE_NORMAL;
+    stream->postcopy_transition_completed = false;
     stream->recursion_guard = false;
     stream->incoming_record = NULL;
     FILLZERO(stream->emu_dc);
@@ -293,19 +299,34 @@ void libxl__stream_read_start(libxl__egc *egc,
     stream_complete(egc, stream, rc);
 }
 
-void libxl__stream_read_start_checkpoint(libxl__egc *egc,
-                                         libxl__stream_read_state *stream)
+void libxl__stream_read_start_postcopy_transition(
+    libxl__egc *egc,
+    libxl__stream_read_state *stream)
 {
-    assert(stream->running);
-    assert(!stream->in_checkpoint);
+    int checkpointed_stream = stream->dcs->restore_params.checkpointed_stream;
 
-    stream->in_checkpoint = true;
-    stream->phase = SRS_PHASE_BUFFERING;
+    assert(stream->running);
+    assert(checkpointed_stream == LIBXL_CHECKPOINTED_STREAM_NONE);
+    assert(stream->phase == SRS_PHASE_NORMAL);
+    assert(!stream->postcopy_transition_completed);
+
+    stream->phase = SRS_PHASE_POSTCOPY_TRANSITION;
 
     /*
      * Libxc has handed control of the fd to us.  Start reading some
      * libxl records out of it.
      */
+    stream_continue(egc, stream);
+}
+
+void libxl__stream_read_start_checkpoint(libxl__egc *egc,
+                                         libxl__stream_read_state *stream)
+{
+    assert(stream->running);
+    assert(stream->phase == SRS_PHASE_NORMAL);
+
+    stream->phase = SRS_PHASE_CHECKPOINT_BUFFERING;
+
     stream_continue(egc, stream);
 }
 
@@ -392,6 +413,8 @@ static void stream_continue(libxl__egc *egc,
 
     switch (stream->phase) {
     case SRS_PHASE_NORMAL:
+    case SRS_PHASE_POSTCOPY_TRANSITION:
+    case SRS_PHASE_CHECKPOINT_STATE:
         /*
          * Normal phase (regular migration or restore from file):
          *
@@ -416,9 +439,9 @@ static void stream_continue(libxl__egc *egc,
         }
         break;
 
-    case SRS_PHASE_BUFFERING: {
+    case SRS_PHASE_CHECKPOINT_BUFFERING: {
         /*
-         * Buffering phase (checkpointed streams only):
+         * Buffering phase:
          *
          * logically:
          *   do { read_record(); } while ( not CHECKPOINT_END );
@@ -431,8 +454,6 @@ static void stream_continue(libxl__egc *egc,
         libxl__sr_record_buf *rec = LIBXL_STAILQ_LAST(
             &stream->record_queue, libxl__sr_record_buf, entry);
 
-        assert(stream->in_checkpoint);
-
         if (!rec || (rec->hdr.type != REC_TYPE_CHECKPOINT_END)) {
             setup_read_record(egc, stream);
             break;
@@ -442,19 +463,18 @@ static void stream_continue(libxl__egc *egc,
          * There are now some number of buffered records, with a
          * CHECKPOINT_END at the end. Start processing them all.
          */
-        stream->phase = SRS_PHASE_UNBUFFERING;
+        stream->phase = SRS_PHASE_CHECKPOINT_UNBUFFERING;
     }
         /* FALLTHROUGH */
-    case SRS_PHASE_UNBUFFERING:
+    case SRS_PHASE_CHECKPOINT_UNBUFFERING:
         /*
-         * Unbuffering phase (checkpointed streams only):
+         * Unbuffering phase:
          *
          * logically:
          *   do { process_record(); } while ( not CHECKPOINT_END );
          *
          * Process all records collected during the buffering phase.
          */
-        assert(stream->in_checkpoint);
 
         while (process_record(egc, stream))
             ; /*
@@ -625,7 +645,7 @@ static bool process_record(libxl__egc *egc,
         break;
 
     case REC_TYPE_CHECKPOINT_END:
-        if (!stream->in_checkpoint) {
+        if (!stream_in_checkpoint(stream)) {
             LOG(ERROR, "Unexpected CHECKPOINT_END record in stream");
             rc = ERROR_FAIL;
             goto err;
@@ -634,7 +654,7 @@ static bool process_record(libxl__egc *egc,
         break;
 
     case REC_TYPE_CHECKPOINT_STATE:
-        if (!stream->in_checkpoint_state) {
+        if (stream->phase != SRS_PHASE_CHECKPOINT_STATE) {
             LOG(ERROR, "Unexpected CHECKPOINT_STATE record in stream");
             rc = ERROR_FAIL;
             goto err;
@@ -743,7 +763,12 @@ static void stream_complete(libxl__egc *egc,
 {
     assert(stream->running);
 
-    if (stream->in_checkpoint) {
+    switch (stream->phase) {
+    case SRS_PHASE_NORMAL:
+        stream_done(egc, stream, rc);
+        break;
+    case SRS_PHASE_CHECKPOINT_BUFFERING:
+    case SRS_PHASE_CHECKPOINT_UNBUFFERING:
         assert(rc);
 
         /*
@@ -752,10 +777,17 @@ static void stream_complete(libxl__egc *egc,
          * libxl__xc_domain_restore_done()
          */
         checkpoint_done(egc, stream, rc);
-        return;
-    }
+        break;
+    case SRS_PHASE_POSTCOPY_TRANSITION:
+        assert(rc);
 
-    if (stream->in_checkpoint_state) {
+        /*
+         * To deal with errors during the postcopy transition, we use the same
+         * strategy as during checkpoints.
+         */
+        postcopy_transition_done(egc, stream, rc);
+        break;
+    case SRS_PHASE_CHECKPOINT_STATE:
         assert(rc);
 
         /*
@@ -767,10 +799,19 @@ static void stream_complete(libxl__egc *egc,
          *    libxl__stream_read_abort()
          */
         checkpoint_state_done(egc, stream, rc);
-        return;
+        break;
+    default:
+        assert(false);
     }
+}
 
-    stream_done(egc, stream, rc);
+static void postcopy_transition_done(libxl__egc *egc,
+                                     libxl__stream_read_state *stream, int rc)
+{
+    assert(stream->phase == SRS_PHASE_POSTCOPY_TRANSITION);
+    stream->postcopy_transition_completed = true;
+    stream->phase = SRS_PHASE_NORMAL;
+    stream->postcopy_transition_callback(egc, stream, rc);
 }
 
 static void checkpoint_done(libxl__egc *egc,
@@ -778,7 +819,7 @@ static void checkpoint_done(libxl__egc *egc,
 {
     int ret;
 
-    assert(stream->in_checkpoint);
+    assert(stream_in_checkpoint(stream));
 
     if (rc == 0)
         ret = XGR_CHECKPOINT_SUCCESS;
@@ -789,7 +830,6 @@ static void checkpoint_done(libxl__egc *egc,
 
     stream->checkpoint_callback(egc, stream, ret);
 
-    stream->in_checkpoint = false;
     stream->phase = SRS_PHASE_NORMAL;
 }
 
@@ -799,8 +839,7 @@ static void stream_done(libxl__egc *egc,
     libxl__sr_record_buf *rec, *trec;
 
     assert(stream->running);
-    assert(!stream->in_checkpoint);
-    assert(!stream->in_checkpoint_state);
+    assert(stream->phase == SRS_PHASE_NORMAL);
     stream->running = false;
 
     if (stream->incoming_record)
@@ -955,9 +994,8 @@ void libxl__stream_read_checkpoint_state(libxl__egc *egc,
                                          libxl__stream_read_state *stream)
 {
     assert(stream->running);
-    assert(!stream->in_checkpoint);
-    assert(!stream->in_checkpoint_state);
-    stream->in_checkpoint_state = true;
+    assert(stream->phase == SRS_PHASE_NORMAL);
+    stream->phase = SRS_PHASE_CHECKPOINT_STATE;
 
     setup_read_record(egc, stream);
 }
@@ -965,8 +1003,8 @@ void libxl__stream_read_checkpoint_state(libxl__egc *egc,
 static void checkpoint_state_done(libxl__egc *egc,
                                   libxl__stream_read_state *stream, int rc)
 {
-    assert(stream->in_checkpoint_state);
-    stream->in_checkpoint_state = false;
+    assert(stream->phase == SRS_PHASE_CHECKPOINT_STATE);
+    stream->phase = SRS_PHASE_NORMAL;
     stream->checkpoint_callback(egc, stream, rc);
 }
 

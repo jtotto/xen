@@ -22,7 +22,7 @@
  * Entry points from outside:
  *  - libxl__stream_write_start()
  *     - Start writing a stream from the start.
- *  - libxl__stream_write_postcopy_transition()
+ *  - libxl__stream_write_start_postcopy_transition()
  *     - Write the records required to permit postcopy resumption at the
  *       migration target.
  *  - libxl__stream_write_start_checkpoint()
@@ -217,6 +217,7 @@ void libxl__stream_write_init(libxl__stream_write_state *stream)
     stream->rc = 0;
     stream->running = false;
     stream->state = SWS_STATE_NORMAL;
+    stream->postcopy_transition_completed = false;
     stream->sync_teardown = false;
     FILLZERO(stream->dc);
     stream->record_done_callback = NULL;
@@ -293,8 +294,9 @@ void libxl__stream_write_start(libxl__egc *egc,
     stream_complete(egc, stream, rc);
 }
 
-void libxl__stream_write_postcopy_transition(libxl__egc *egc,
-                                             libxl__stream_write_state *stream)
+void libxl__stream_write_start_postcopy_transition(
+    libxl__egc *egc,
+    libxl__stream_write_state *stream)
 {
     libxl__domain_save_state *dss = stream->dss;
 
