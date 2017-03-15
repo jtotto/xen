@@ -77,6 +77,53 @@ WRITE_TRIVIAL_RECORD_FN(postcopy_begin,      REC_TYPE_POSTCOPY_BEGIN);
 WRITE_TRIVIAL_RECORD_FN(postcopy_pfns_begin, REC_TYPE_POSTCOPY_PFNS_BEGIN);
 WRITE_TRIVIAL_RECORD_FN(postcopy_transition, REC_TYPE_POSTCOPY_TRANSITION);
 
+/* XXX */
+static int get_batch_info(struct xc_sr_context *ctx,
+                          /* OUT */ xen_pfn_t **p_mfns,
+                          /* OUT */ xen_pfn_t **p_types)
+{
+    int rc = -1;
+    unsigned nr_pfns = ctx->save.nr_batch_pfns;
+    xen_pfn_t *mfns, *types;
+    unsigned i;
+
+    assert(p_mfns);
+    assert(p_types);
+
+    *p_mfns = mfns = malloc(nr_pfns * sizeof(*mfns));
+    *types = types = malloc(nr_pfns * sizeof(*types));
+
+    if ( !mfns || !types )
+    {
+        ERROR("Unable to allocate arrays for a batch of %u pages",
+              nr_pfns);
+        goto err;
+    }
+
+    for ( i = 0; i < nr_pfns; ++i )
+        types[i] = mfns[i] = ctx->save.ops.pfn_to_gfn(ctx,
+                                                      ctx->save.batch_pfns[i]);
+
+    rc = xc_get_pfn_type_batch(xch, ctx->domid, nr_pfns, types);
+    if ( rc )
+    {
+        PERROR("Failed to get types for pfn batch");
+        goto err;
+    }
+
+    goto done;
+
+ err:
+    free(mfns);
+    *p_mfns = NULL;
+
+    free(types);
+    *p_types = NULL;
+
+ done:
+    return rc;
+}
+
 /*
  * Writes a batch of memory as a PAGE_DATA record into the stream.  The batch
  * is constructed in ctx->save.batch_pfns.
@@ -87,10 +134,11 @@ WRITE_TRIVIAL_RECORD_FN(postcopy_transition, REC_TYPE_POSTCOPY_TRANSITION);
  *   - maps and attempts to localise the pages.
  * - construct and writes a PAGE_DATA record into the stream.
  */
-static int write_batch(struct xc_sr_context *ctx)
+static int write_batch(struct xc_sr_context *ctx, xen_pfn_t *mfns,
+                       xen_pfn_t *types)
 {
     xc_interface *xch = ctx->xch;
-    xen_pfn_t *mfns = NULL, *types = NULL;
+    xen_pfn_t *bmfns = NULL;
     void *guest_mapping = NULL;
     void **guest_data = NULL;
     void **local_pages = NULL;
@@ -110,10 +158,8 @@ static int write_batch(struct xc_sr_context *ctx)
 
     assert(nr_pfns != 0);
 
-    /* Mfns of the batch pfns. */
-    mfns = malloc(nr_pfns * sizeof(*mfns));
-    /* Types of the batch pfns. */
-    types = malloc(nr_pfns * sizeof(*types));
+    /* XXX */
+    bmfns = malloc(nr_pfns * sizeof(*bmfns));
     /* Errors from attempting to map the gfns. */
     errors = malloc(nr_pfns * sizeof(*errors));
     /* Pointers to page data to send.  Mapped gfns or local allocations. */
@@ -123,33 +169,22 @@ static int write_batch(struct xc_sr_context *ctx)
     /* iovec[] for writev(). */
     iov = malloc((nr_pfns + 4) * sizeof(*iov));
 
-    if ( !mfns || !types || !errors || !guest_data || !local_pages || !iov )
+    if ( !bmfns || !errors || !guest_data || !local_pages || !iov )
     {
         ERROR("Unable to allocate arrays for a batch of %u pages",
               nr_pfns);
         goto err;
     }
 
+    /* Mark likely-ballooned pages as deferred. */
     for ( i = 0; i < nr_pfns; ++i )
     {
-        types[i] = mfns[i] = ctx->save.ops.pfn_to_gfn(ctx,
-                                                      ctx->save.batch_pfns[i]);
-
-        /* Likely a ballooned page. */
         if ( mfns[i] == INVALID_MFN )
         {
             set_bit(ctx->save.batch_pfns[i], ctx->save.deferred_pages);
             ++ctx->save.nr_deferred_pages;
         }
     }
-
-    rc = xc_get_pfn_type_batch(xch, ctx->domid, nr_pfns, types);
-    if ( rc )
-    {
-        PERROR("Failed to get types for pfn batch");
-        goto err;
-    }
-    rc = -1;
 
     if ( send_page_contents )
     {
@@ -163,14 +198,14 @@ static int write_batch(struct xc_sr_context *ctx)
                 continue;
             }
 
-            mfns[nr_pages++] = mfns[i];
+            bmfns[nr_pages++] = mfns[i];
         }
     }
 
     if ( nr_pages > 0 )
     {
         guest_mapping = xenforeignmemory_map(xch->fmem,
-            ctx->domid, PROT_READ, nr_pages, mfns, errors);
+            ctx->domid, PROT_READ, nr_pages, bmfns, errors);
         if ( !guest_mapping )
         {
             PERROR("Failed to map guest pages");
@@ -191,7 +226,7 @@ static int write_batch(struct xc_sr_context *ctx)
             if ( errors[p] )
             {
                 ERROR("Mapping of pfn %#"PRIpfn" (mfn %#"PRIpfn") failed %d",
-                      ctx->save.batch_pfns[i], mfns[p], errors[p]);
+                      ctx->save.batch_pfns[i], bmfns[p], errors[p]);
                 goto err;
             }
 
@@ -286,8 +321,7 @@ static int write_batch(struct xc_sr_context *ctx)
     free(local_pages);
     free(guest_data);
     free(errors);
-    free(types);
-    free(mfns);
+    free(bmfns);
 
     return rc;
 }
@@ -314,11 +348,18 @@ static bool batch_empty(struct xc_sr_context *ctx)
 static int flush_batch(struct xc_sr_context *ctx)
 {
     int rc = 0;
+    xen_pfn_t *mfns = NULL, *types = NULL;
 
     if ( batch_empty(ctx) )
         return rc;
 
-    rc = write_batch(ctx);
+    rc = get_batch_info(ctx, &mfns, &types);
+    if ( rc )
+        return rc;
+
+    rc = write_batch(ctx, mfns, types);
+    free(mfns);
+    free(types);
 
     if ( !rc )
     {
@@ -341,6 +382,61 @@ static void add_to_batch(struct xc_sr_context *ctx, xen_pfn_t pfn)
 
 /*
  * XXX
+ *
+ * Flush the current batch of postcopy pfns, additionally clearing the dirty
+ * bits of pages with no migrateable backing.
+ */
+static int flush_postcopy_pfns_batch(struct xc_sr_context *ctx)
+{
+    int rc = 0;
+    xen_pfn_t *pfns = ctx->save.batch_pfns, *mfns = NULL, *types = NULL;
+    unsigned i, nr_pfns = ctx->save.nr_batch_pfns;
+
+    DECLARE_HYPERCALL_BUFFER_SHADOW(unsigned long, dirty_bitmap,
+                                    &ctx->save.dirty_bitmap_hbuf);
+
+    assert(ctx->save.batch_type == XC_SR_SAVE_BATCH_PFN);
+
+    if ( batch_empty(ctx) )
+        return rc;
+
+    rc = get_batch_info(ctx, &mfns, &types);
+    if ( rc )
+        return rc;
+
+    /* Consider any pages not backed by a physical page of data to have been
+     * 'cleaned' at this point - there's no sense wasting room in a subsequent
+     * postcopy batch to duplicate the type information. */
+    for ( i = 0; i < nr_pfns; ++i )
+    {
+        switch ( types[i] )
+        {
+        case XEN_DOMCTL_PFINFO_BROKEN:
+        case XEN_DOMCTL_PFINFO_XALLOC:
+        case XEN_DOMCTL_PFINFO_XTAB:
+            clear_bit(pfns[i], dirty_bitmap);
+            continue;
+        }
+
+        ++ctx->save.nr_final_dirty_pages;
+    }
+
+    rc = write_batch(ctx, mfns, types);
+    free(mfns);
+    free(types);
+
+    if ( !rc )
+    {
+        VALGRIND_MAKE_MEM_UNDEFINED(ctx->save.batch_pfns,
+                                    MAX_BATCH_SIZE *
+                                    sizeof(*ctx->save.batch_pfns));
+    }
+
+    return rc;
+}
+
+/*
+ * XXX also counts nr_final_dirty_pages
  */
 static int send_postcopy_pfns(struct xc_sr_context *ctx)
 {
@@ -350,6 +446,8 @@ static int send_postcopy_pfns(struct xc_sr_context *ctx)
 
     DECLARE_HYPERCALL_BUFFER_SHADOW(unsigned long, dirty_bitmap,
                                     &ctx->save.dirty_bitmap_hbuf);
+
+    ctx->save.nr_final_dirty_pages = 0;
 
     rc = write_postcopy_pfns_begin_record(ctx);
     if ( rc )
@@ -364,7 +462,7 @@ static int send_postcopy_pfns(struct xc_sr_context *ctx)
 
         if ( batch_full(ctx) )
         {
-            rc = flush_batch(ctx);
+            rc = flush_postcopy_pfns_batch(ctx);
             if ( rc )
                 return rc;
         }
@@ -372,7 +470,7 @@ static int send_postcopy_pfns(struct xc_sr_context *ctx)
         add_to_batch(ctx, p);
     }
 
-    return flush_batch(ctx);
+    return flush_postcopy_pfns_batch(ctx);
 }
 
 /*
@@ -450,7 +548,7 @@ static int do_send_dirty_pages(struct xc_sr_context *ctx,
              * entry to the postcopy phase. */
             bitmap_or(ctx->save.deferred_pages, dirty_bitmap,
                       ctx->save.p2m_size);
-            ctx->save.nr_deferred_pages += entries - written; /* XXX */
+            /* XXX nr_deferred_pages no longer has any meaning */
             goto done;
         }
 
@@ -721,11 +819,11 @@ static int suspend_and_check_dirty(struct xc_sr_context *ctx)
         }
     }
 
-    /* The postcopy loop depends on this value being completely accurate, so
-     * we'll compute exactly rather than estimate the population of the final
-     * dirty bitmap. */
-    ctx->save.nr_final_dirty_pages = bitmap_popcount(dirty_bitmap,
-                                                     ctx->save.p2m_size);
+    if ( !ctx->save.postcopy_requested )
+    {
+        ctx->save.nr_final_dirty_pages =
+            stats.dirty_count + ctx->save.nr_deferred_pages;
+    }
 
     bitmap_clear(ctx->save.deferred_pages, ctx->save.p2m_size);
     ctx->save.nr_deferred_pages = 0;
@@ -820,8 +918,8 @@ static int send_domain_memory_live(struct xc_sr_context *ctx)
 
 static int handle_postcopy_faults(struct xc_sr_context *ctx,
                                   struct xc_sr_record *rec,
-                                  unsigned long *nr_new_fault_pfns_out,
-                                  xen_pfn_t *last_fault_pfn_out)
+                                  /* OUT */ unsigned long *nr_new_fault_pfns,
+                                  /* OUT */ xen_pfn_t *last_fault_pfn)
 {
     int rc;
     struct xc_sr_rec_pages_header *fault_pages = rec->data;
@@ -846,13 +944,14 @@ static int handle_postcopy_faults(struct xc_sr_context *ctx,
             }
 
             add_to_batch(ctx, fault_pages->pfn[i]);
+            ++(*nr_new_fault_pfns);
         }
     }
 
     /* _Don't_ flush yet - fill out the rest of the batch. */
 
     assert(fault_pages->count);
-    *last_fault_pfn_out = fault_pages->pfn[fault_pages->count - 1];
+    *last_fault_pfn = fault_pages->pfn[fault_pages->count - 1];
     return 0;
 }
 
@@ -919,6 +1018,11 @@ static int postcopy_domain_memory(struct xc_sr_context *ctx)
             }
             else
             {
+                /* Tear down and re-initialize the read record context for the
+                 * next request record. */
+                read_record_destroy(&rrctx);
+                read_record_init(&rrctx);
+
                 /* The destination may decide that some pages we think are dirty
                  * don't actually need to be migrated (e.g. the HVM console
                  * page, which is simply cleared unconditionally).  It is
