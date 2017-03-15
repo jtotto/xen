@@ -27,6 +27,12 @@
 
 #include <xen-xsm/flask/flask.h>
 
+int libxl__create_hello_world_test_callback(void *user)
+{
+    printf("HELLO WORLD CREATE\n");
+    return 12;
+}
+
 int libxl__domain_create_info_setdefault(libxl__gc *gc,
                                          libxl_domain_create_info *c_info)
 {
@@ -1064,6 +1070,9 @@ static void domcreate_bootloader_done(libxl__egc *egc,
         domcreate_rebuild_done(egc, dcs, rc);
         return;
     }
+
+    /* TEST */
+    callbacks->hello_world_test = libxl__create_hello_world_test_callback;
 
     /* Restore */
     callbacks->restore_results = libxl__srm_callout_callback_restore_results;

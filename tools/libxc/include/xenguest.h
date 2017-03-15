@@ -30,7 +30,7 @@
 #define XCFLAGS_STDVGA    (1 << 3)
 #define XCFLAGS_CHECKPOINT_COMPRESS    (1 << 4)
 
-#define X86_64_B_SIZE   64 
+#define X86_64_B_SIZE   64
 #define X86_32_B_SIZE   32
 
 /*
@@ -76,6 +76,8 @@ struct save_callbacks {
      * 1: take another checkpoint
      */
     int (*wait_checkpoint)(void* data);
+
+    int (*hello_world_test)(void* data);
 
     /* Enable qemu-dm logging dirty pages to xen */
     int (*switch_qemu_logdirty)(int domid, unsigned enable, void *data); /* HVM only */
@@ -140,6 +142,8 @@ struct restore_callbacks {
      */
     void (*restore_results)(xen_pfn_t store_gfn, xen_pfn_t console_gfn,
                             void *data);
+
+    int (*hello_world_test)(void* data);
 
     /* to be provided as the last argument to each callback function */
     void* data;

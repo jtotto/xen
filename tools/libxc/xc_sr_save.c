@@ -809,6 +809,11 @@ static int save(struct xc_sr_context *ctx, uint16_t guest_type)
     if ( rc )
         goto err;
 
+    /* TEST */
+    rc = ctx->save.callbacks->hello_world_test(ctx->save.callbacks->data);
+    DPRINTF("HELLO WORLD RETURNED %d\n", rc);
+    rc = 0;
+
     do {
         rc = ctx->save.ops.start_of_checkpoint(ctx);
         if ( rc )

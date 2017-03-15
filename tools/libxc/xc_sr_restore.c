@@ -738,6 +738,11 @@ static int restore(struct xc_sr_context *ctx)
 
     IPRINTF("Restoring domain");
 
+    /* TEST */
+    rc = ctx->restore.callbacks->hello_world_test(ctx->restore.callbacks->data);
+    DPRINTF("HELLO WORLD RETURNED %d\n", rc);
+    rc = 0;
+
     rc = setup(ctx);
     if ( rc )
         goto err;

@@ -328,6 +328,12 @@ int libxl__save_emulator_xenstore_data(libxl__domain_save_state *dss,
     return rc;
 }
 
+int libxl__save_hello_world_test_callback(void *user)
+{
+    printf("HELLO WORLD SAVE\n");
+    return 11;
+}
+
 /*----- main code for saving, in order of execution -----*/
 
 void libxl__domain_save(libxl__egc *egc, libxl__domain_save_state *dss)
@@ -373,6 +379,9 @@ void libxl__domain_save(libxl__egc *egc, libxl__domain_save_state *dss)
     default:
         abort();
     }
+
+    /* TESTING */
+    callbacks->hello_world_test = libxl__save_hello_world_test_callback;
 
     dss->xcflags = (live ? XCFLAGS_LIVE : 0)
           | (debug ? XCFLAGS_DEBUG : 0)

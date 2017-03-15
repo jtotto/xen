@@ -33,6 +33,7 @@ our @msgs = (
                                               'xen_pfn_t', 'console_gfn'] ],
     [  9, 'srW',    "complete",              [qw(int retval
                                                  int errnoval)] ],
+    [  10, 'srcxW',  "hello_world_test", [] ],
 );
 
 #----------------------------------------
