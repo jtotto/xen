@@ -183,7 +183,8 @@ struct xc_sr_pending_postcopy_request
     LIBXC_SLIST_ENTRY(struct xc_sr_pending_postcopy_request) link;
 };
 
-LIBXC_SLIST_HEAD(xc_sr_pending_postcopy_requests);
+LIBXC_SLIST_HEAD(xc_sr_pending_postcopy_requests,
+                 struct xc_sr_pending_postcopy_request);
 
 struct xc_sr_context
 {
