@@ -669,14 +669,6 @@ static int process_postcopy_pfns(struct xc_sr_context *ctx, unsigned count,
     int rc;
     unsigned i, nr_pages;
 
-    if ( !map_errs )
-    {
-        rc = -1;
-        ERROR("Failed to allocate %zu bytes to process page data",
-              count * sizeof(*map_errs));
-        goto err;
-    }
-
     rc = populate_pfns(ctx, count, pfns, types);
     if ( rc )
     {
