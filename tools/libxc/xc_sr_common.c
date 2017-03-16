@@ -38,6 +38,13 @@ static const char *mandatory_rec_types[] =
     [REC_TYPE_VERIFY]                       = "Verify",
     [REC_TYPE_CHECKPOINT]                   = "Checkpoint",
     [REC_TYPE_CHECKPOINT_DIRTY_PFN_LIST]    = "Checkpoint dirty pfn list",
+    [REC_TYPE_POSTCOPY_BEGIN]               = "Postcopy begin",
+    [REC_TYPE_POSTCOPY_PFNS_BEGIN]          = "Postcopy pfns begin",
+    [REC_TYPE_POSTCOPY_PFNS]                = "Postcopy pfns",
+    [REC_TYPE_POSTCOPY_TRANSITION]          = "Postcopy transition",
+    [REC_TYPE_POSTCOPY_PAGE_DATA]           = "Postcopy page data",
+    [REC_TYPE_POSTCOPY_FAULT]               = "Postcopy fault",
+    [REC_TYPE_POSTCOPY_COMPLETE]            = "Postcopy complete"
 };
 
 const char *rec_type_to_str(uint32_t type)

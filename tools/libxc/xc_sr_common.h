@@ -250,7 +250,7 @@ struct xc_sr_context
             uint32_t guest_type;
             uint32_t guest_page_size;
 
-            /* Is this a postcopy migration? */
+            /* Is this a postcopy (live) migration? */
             bool postcopy;
 
             struct xc_sr_restore_paging
@@ -263,6 +263,7 @@ struct xc_sr_context
 
                 struct xc_sr_pending_postcopy_requests *pending_pfns;
                 unsigned nr_pending_pfns;
+                uint64_t *batch_request_pfns;
                 void *buffer;
 
                 /* For teardown. */
