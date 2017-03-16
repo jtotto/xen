@@ -76,13 +76,4 @@ static inline void bitmap_or(void *_dst, const void *_other,
         dst[i] |= other[i];
 }
 
-static inline int bitmap_popcount(void *addr, int nr_bits)
-{
-    int count = 0;
-    int i;
-    for ( i = 0; i < nr_bits; ++i )
-        count += test_bit(i, addr);
-    return count;
-}
-
 #endif  /* XC_BITOPS_H */
