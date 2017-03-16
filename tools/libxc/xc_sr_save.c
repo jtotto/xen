@@ -68,7 +68,7 @@ static int write_headers(struct xc_sr_context *ctx, uint16_t guest_type)
     {                                                               \
         struct xc_sr_record name = { (type), 0, NULL };             \
                                                                     \
-        return write_record(ctx, &name);                            \
+        return write_record(ctx->fd, &name);                        \
     }
 
 WRITE_TRIVIAL_RECORD_FN(end,                 REC_TYPE_END);
@@ -853,7 +853,7 @@ static int verify_frames(struct xc_sr_context *ctx)
 
     DPRINTF("Enabling verify mode");
 
-    rc = write_record(ctx, &rec);
+    rc = write_record(ctx->fd, &rec);
     if ( rc )
         goto out;
 
