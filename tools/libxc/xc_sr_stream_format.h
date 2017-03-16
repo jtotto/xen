@@ -94,8 +94,8 @@ struct xc_sr_rec_pages_header
     uint64_t pfn[0];
 };
 
-#define REC_PFN_MASK  0x000fffffffffffffULL
-#define REC_TYPE_MASK 0xf000000000000000ULL
+#define REC_PFINFO_PFN_MASK  0x000fffffffffffffULL
+#define REC_PFINFO_TYPE_MASK 0xf000000000000000ULL
 
 /* X86_PV_INFO */
 struct xc_sr_rec_x86_pv_info

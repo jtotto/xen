@@ -46,54 +46,58 @@ struct save_callbacks {
      */
     int (*suspend)(void* data);
 
-    /* Called periodically during a live migration save to check the migration
-     * should enter the post-copy phase.
-     *
-     * returns:
-     * 0: do not begin the postcopy phase
-     * 1: begin the postcopy phase, if appropriate */
-    int (*should_begin_postcopy)(void *data);
-
-    /* Called after the guest's dirty pages have been
-     *  copied into an output buffer.
-     * Callback function resumes the guest & the device model,
-     *  returns to xc_domain_save.
-     * xc_domain_save then flushes the output buffer, while the
-     *  guest continues to run.
-     */
-    int (*aftercopy)(void* data);
-
     /* Checkpointing and postcopy live migration are mutually exclusive. */
     union {
-        /* Called after the memory checkpoint has been flushed
-         * out into the network. Typical actions performed in this
-         * callback include:
-         *   (a) send the saved device model state (for HVM guests),
-         *   (b) wait for checkpoint ack
-         *   (c) release the network output buffer pertaining to the acked
-         *       checkpoint.
-         *   (c) sleep for the checkpoint interval.
-         *
-         * returns:
-         * 0: terminate checkpointing gracefully
-         * 1: take another checkpoint */
-        int (*checkpoint)(void* data);
+        struct {
+            /* Called periodically during a live migration save to check the migration
+             * should enter the post-copy phase.
+             *
+             * returns:
+             * 0: do not begin the postcopy phase
+             * 1: begin the postcopy phase, if appropriate */
+            int (*should_begin_postcopy)(void *data);
 
-        /* XXX */
-        int (*postcopy_transition)(void *data);
+            /* XXX */
+            int (*save_postcopy_transition)(void *data);
+        };
+
+        struct {
+            /* Called after the guest's dirty pages have been
+             *  copied into an output buffer.
+             * Callback function resumes the guest & the device model,
+             *  returns to xc_domain_save.
+             * xc_domain_save then flushes the output buffer, while the
+             *  guest continues to run.
+             */
+            int (*aftercopy)(void* data);
+
+            /* Called after the memory checkpoint has been flushed
+             * out into the network. Typical actions performed in this
+             * callback include:
+             *   (a) send the saved device model state (for HVM guests),
+             *   (b) wait for checkpoint ack
+             *   (c) release the network output buffer pertaining to the acked
+             *       checkpoint.
+             *   (c) sleep for the checkpoint interval.
+             *
+             * returns:
+             * 0: terminate checkpointing gracefully
+             * 1: take another checkpoint */
+            int (*checkpoint)(void* data);
+
+            /*
+             * Called after the checkpoint callback.
+             *
+             * returns:
+             * 0: terminate checkpointing gracefully
+             * 1: take another checkpoint
+             */
+            int (*wait_checkpoint)(void* data);
+
+            /* Enable qemu-dm logging dirty pages to xen */
+            int (*switch_qemu_logdirty)(int domid, unsigned enable, void *data); /* HVM only */
+        };
     };
-
-    /*
-     * Called after the checkpoint callback.
-     *
-     * returns:
-     * 0: terminate checkpointing gracefully
-     * 1: take another checkpoint
-     */
-    int (*wait_checkpoint)(void* data);
-
-    /* Enable qemu-dm logging dirty pages to xen */
-    int (*switch_qemu_logdirty)(int domid, unsigned enable, void *data); /* HVM only */
 
     /* to be provided as the last argument to each callback function */
     void* data;
@@ -126,41 +130,44 @@ struct restore_callbacks {
      */
     int (*suspend)(void* data);
 
-    /* Called after the secondary vm is ready to resume.
-     * Callback function resumes the guest & the device model,
-     * returns to xc_domain_restore.
-     */
-    int (*aftercopy)(void* data);
-
-    /* Checkpointing and postcopy live migration are mutually exclusive. */
     union {
-        /* A checkpoint record has been found in the stream.
-         * returns: */
+        struct {
+            /* XXX */
+            void (*restore_postcopy_transition)(void *data);
+        };
+
+        struct {
+            /* Called after the secondary vm is ready to resume.
+             * Callback function resumes the guest & the device model,
+             * returns to xc_domain_restore.
+             */
+            int (*aftercopy)(void* data);
+
+            /* A checkpoint record has been found in the stream.
+             * returns: */
 #define XGR_CHECKPOINT_ERROR    0 /* Terminate processing */
 #define XGR_CHECKPOINT_SUCCESS  1 /* Continue reading more data from the stream */
 #define XGR_CHECKPOINT_FAILOVER 2 /* Failover and resume VM */
-        int (*checkpoint)(void* data);
+            int (*checkpoint)(void* data);
 
-        /* XXX */
-        int (*postcopy_transition)(void *data);
+            /*
+             * Called after the checkpoint callback.
+             *
+             * returns:
+             * 0: terminate checkpointing gracefully
+             * 1: take another checkpoint
+             */
+            int (*wait_checkpoint)(void* data);
+
+            /*
+             * callback to send store gfn and console gfn to xl
+             * if we want to resume vm before xc_domain_save()
+             * exits.
+             */
+            void (*restore_results)(xen_pfn_t store_gfn, xen_pfn_t console_gfn,
+                                    void *data);
+        };
     };
-
-    /*
-     * Called after the checkpoint callback.
-     *
-     * returns:
-     * 0: terminate checkpointing gracefully
-     * 1: take another checkpoint
-     */
-    int (*wait_checkpoint)(void* data);
-
-    /*
-     * callback to send store gfn and console gfn to xl
-     * if we want to resume vm before xc_domain_save()
-     * exits.
-     */
-    void (*restore_results)(xen_pfn_t store_gfn, xen_pfn_t console_gfn,
-                            void *data);
 
     /* to be provided as the last argument to each callback function */
     void* data;

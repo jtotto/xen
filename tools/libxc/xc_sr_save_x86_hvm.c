@@ -109,7 +109,7 @@ static int write_hvm_params(struct xc_sr_context *ctx)
 
         if ( value != 0 )
         {
-            if ( ctx->postcopy_requested &&
+            if ( ctx->save.postcopy_requested &&
                  ( index == HVM_PARAM_CONSOLE_PFN ||
                    index == HVM_PARAM_STORE_PFN ||
                    index == HVM_PARAM_IOREQ_PFN ||

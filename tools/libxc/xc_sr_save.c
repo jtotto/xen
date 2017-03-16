@@ -8,15 +8,15 @@
 
 static const unsigned batch_sizes[] =
 {
-    [XC_SR_SAVE_BATCH_PAGE]          = MAX_PAGE_BATCH_SIZE,
-    [XC_SR_SAVE_BATCH_PFN]           = MAX_PFN_BATCH_SIZE,
+    [XC_SR_SAVE_BATCH_PRECOPY_PAGE]  = MAX_PAGE_BATCH_SIZE,
+    [XC_SR_SAVE_BATCH_POSTCOPY_PFN]  = MAX_PFN_BATCH_SIZE,
     [XC_SR_SAVE_BATCH_POSTCOPY_PAGE] = MAX_POSTCOPY_BATCH_SIZE
 };
 
 static const uint32_t batch_rec_types[] =
 {
-    [XC_SR_SAVE_BATCH_PAGE]          = REC_TYPE_PAGE_DATA,
-    [XC_SR_SAVE_BATCH_PFN]           = REC_TYPE_POSTCOPY_PFNS,
+    [XC_SR_SAVE_BATCH_PRECOPY_PAGE]  = REC_TYPE_PAGE_DATA,
+    [XC_SR_SAVE_BATCH_POSTCOPY_PFN]  = REC_TYPE_POSTCOPY_PFNS,
     [XC_SR_SAVE_BATCH_POSTCOPY_PAGE] = REC_TYPE_POSTCOPY_PAGE_DATA
 };
 
@@ -89,6 +89,7 @@ static int get_batch_info(struct xc_sr_context *ctx,
 {
     int rc = -1;
     unsigned nr_pfns = ctx->save.nr_batch_pfns;
+    xc_interface *xch = ctx->xch;
     xen_pfn_t *mfns, *types;
     unsigned i;
 
@@ -96,7 +97,7 @@ static int get_batch_info(struct xc_sr_context *ctx,
     assert(p_types);
 
     *p_mfns = mfns = malloc(nr_pfns * sizeof(*mfns));
-    *types = types = malloc(nr_pfns * sizeof(*types));
+    *p_types = types = malloc(nr_pfns * sizeof(*types));
 
     if ( !mfns || !types )
     {
@@ -336,7 +337,7 @@ static int write_batch(struct xc_sr_context *ctx, xen_pfn_t *mfns,
  */
 static bool batch_full(struct xc_sr_context *ctx)
 {
-    return ctx->save.nr_batch_pfns == batch_maxes[ctx->save.batch_type];
+    return ctx->save.nr_batch_pfns == batch_sizes[ctx->save.batch_type];
 }
 
 /*
@@ -381,7 +382,7 @@ static int flush_batch(struct xc_sr_context *ctx)
  */
 static void add_to_batch(struct xc_sr_context *ctx, xen_pfn_t pfn)
 {
-    assert(ctx->save.nr_batch_pfns < batch_maxes[ctx->save.batch_type]);
+    assert(ctx->save.nr_batch_pfns < batch_sizes[ctx->save.batch_type]);
     ctx->save.batch_pfns[ctx->save.nr_batch_pfns++] = pfn;
 }
 
@@ -400,7 +401,7 @@ static int flush_postcopy_pfns_batch(struct xc_sr_context *ctx)
     DECLARE_HYPERCALL_BUFFER_SHADOW(unsigned long, dirty_bitmap,
                                     &ctx->save.dirty_bitmap_hbuf);
 
-    assert(ctx->save.batch_type == XC_SR_SAVE_BATCH_PFN);
+    assert(ctx->save.batch_type == XC_SR_SAVE_BATCH_POSTCOPY_PFN);
 
     if ( batch_empty(ctx) )
         return rc;
@@ -446,7 +447,6 @@ static int flush_postcopy_pfns_batch(struct xc_sr_context *ctx)
 static int send_postcopy_pfns(struct xc_sr_context *ctx)
 {
     xen_pfn_t p;
-    unsigned i;
     int rc;
 
     DECLARE_HYPERCALL_BUFFER_SHADOW(unsigned long, dirty_bitmap,
@@ -456,10 +456,10 @@ static int send_postcopy_pfns(struct xc_sr_context *ctx)
 
     rc = write_postcopy_pfns_begin_record(ctx);
     if ( rc )
-        goto err;
+        return rc;
 
     assert(batch_empty(ctx));
-    ctx->save.batch_type = XC_SR_SAVE_BATCH_PFN;
+    ctx->save.batch_type = XC_SR_SAVE_BATCH_POSTCOPY_PFN;
     for ( p = 0; p < ctx->save.p2m_size; ++p )
     {
         if ( !test_bit(p, dirty_bitmap) )
@@ -541,7 +541,7 @@ static int do_send_dirty_pages(struct xc_sr_context *ctx,
                                     &ctx->save.dirty_bitmap_hbuf);
 
     assert(batch_empty(ctx));
-    ctx->save.batch_type = XC_SR_SAVE_BATCH_PAGE;
+    ctx->save.batch_type = XC_SR_SAVE_BATCH_PRECOPY_PAGE;
     for ( p = 0; p < ctx->save.p2m_size; )
     {
         if ( ctx->save.live && precopy && should_begin_postcopy(cbdata) )
@@ -927,6 +927,8 @@ static int handle_postcopy_faults(struct xc_sr_context *ctx,
                                   /* OUT */ xen_pfn_t *last_fault_pfn)
 {
     int rc;
+    unsigned i;
+    xc_interface *xch = ctx->xch;
     struct xc_sr_rec_pages_header *fault_pages = rec->data;
 
     DECLARE_HYPERCALL_BUFFER_SHADOW(unsigned long, dirty_bitmap,
@@ -935,11 +937,11 @@ static int handle_postcopy_faults(struct xc_sr_context *ctx,
     if ( rec->type != REC_TYPE_POSTCOPY_FAULT )
     {
         ERROR("Expected a POSTCOPY_FAULT record, received %s instead",
-              rec_to_str(rec->type));
+              rec_type_to_str(rec->type));
         return -1;
     }
 
-    rc = validate_pages_record(rec);
+    rc = validate_pages_record(ctx, rec);
     if ( rc )
         return rc;
 
@@ -976,19 +978,17 @@ static int postcopy_domain_memory(struct xc_sr_context *ctx)
 {
     int rc;
     int recv_fd = ctx->save.recv_fd;
-    int old_flags, nonblocking_flags;
+    int old_flags;
     struct xc_sr_read_record_context rrctx;
     struct xc_sr_record rec = { 0, 0, NULL };
     unsigned long nr_new_fault_pfns;
     unsigned long pages_remaining = ctx->save.nr_final_dirty_pages;
     xen_pfn_t last_fault_pfn, p;
-    unsigned i;
-    bool received_postcopy_complete = false;
 
     DECLARE_HYPERCALL_BUFFER_SHADOW(unsigned long, dirty_bitmap,
                                     &ctx->save.dirty_bitmap_hbuf);
 
-    read_record_init(&rrctx);
+    read_record_init(&rrctx, ctx);
 
     /* First, configure the receive stream as non-blocking so we can
      * periodically poll it for fault requests. */
@@ -1000,9 +1000,8 @@ static int postcopy_domain_memory(struct xc_sr_context *ctx)
     }
 
     assert(!(old_flags & O_NONBLOCK));
-    flags = old_flags | O_NONBLOCK;
 
-    rc = fcntl(recv_fd, F_SETFL, flags);
+    rc = fcntl(recv_fd, F_SETFL, old_flags | O_NONBLOCK);
     if ( rc == -1 )
     {
         goto err;
@@ -1033,7 +1032,7 @@ static int postcopy_domain_memory(struct xc_sr_context *ctx)
                 /* Tear down and re-initialize the read record context for the
                  * next request record. */
                 read_record_destroy(&rrctx);
-                read_record_init(&rrctx);
+                read_record_init(&rrctx, ctx);
 
                 rc = handle_postcopy_faults(ctx, &rec, &nr_new_fault_pfns,
                                             &last_fault_pfn);
@@ -1071,7 +1070,6 @@ static int postcopy_domain_memory(struct xc_sr_context *ctx)
             goto err;
     }
 
- done:
     /* Revert the receive stream to the (blocking) state we found it in. */
     rc = fcntl(recv_fd, F_SETFL, old_flags);
     if ( rc == -1 )
@@ -1254,7 +1252,7 @@ static int save(struct xc_sr_context *ctx, uint16_t guest_type)
                 goto err;
 
             /* ... and yield control to libxl to finish the transition. */
-            rc = ctx->save.callbacks->postcopy_transition(
+            rc = ctx->save.callbacks->save_postcopy_transition(
                 ctx->save.callbacks->data);
             if ( !rc )
             {

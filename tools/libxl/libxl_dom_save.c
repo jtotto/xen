@@ -271,7 +271,7 @@ static void precopy_period_exceeded(libxl__egc *egc, libxl__ev_time *ev,
     dss->request_postcopy = true;
 }
 
-int libxl__domain_suspend_should_begin_postcopy(void *user)
+static int libxl__domain_suspend_should_begin_postcopy(void *user)
 {
     libxl__save_helper_state *shs = user;
     libxl__domain_save_state *dss = shs->caller_state;
@@ -441,7 +441,7 @@ void libxl__domain_save(libxl__egc *egc, libxl__domain_save_state *dss)
 
     if (dss->checkpointed_stream == LIBXL_CHECKPOINTED_STREAM_NONE) {
         callbacks->suspend = libxl__domain_suspend_callback;
-        callbacks->postcopy_transition = libxl__domain_suspend_postcopy_transition_callback;
+        callbacks->save_postcopy_transition = libxl__domain_suspend_postcopy_transition_callback;
 
         if (live) {
             switch (dss->precopy_period) {

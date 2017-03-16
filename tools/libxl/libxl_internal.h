@@ -3158,6 +3158,9 @@ struct libxl__stream_read_state {
 _hidden void libxl__stream_read_init(libxl__stream_read_state *stream);
 _hidden void libxl__stream_read_start(libxl__egc *egc,
                                       libxl__stream_read_state *stream);
+_hidden void libxl__stream_read_start_postcopy_transition(
+    libxl__egc *egc,
+    libxl__stream_read_state *stream);
 _hidden void libxl__stream_read_start_checkpoint(libxl__egc *egc,
                                                  libxl__stream_read_state *stream);
 _hidden void libxl__stream_read_checkpoint_state(libxl__egc *egc,
@@ -3215,11 +3218,11 @@ struct libxl__stream_write_state {
     int rc;
     bool running;
     enum {
-        SWS_STATE_NORMAL,
-        SWS_STATE_CHECKPOINT,
-        SWS_STATE_CHECKPOINT_STATE,
-        SWS_STATE_POSTCOPY_TRANSITION
-    } state;
+        SWS_PHASE_NORMAL,
+        SWS_PHASE_CHECKPOINT,
+        SWS_PHASE_CHECKPOINT_STATE,
+        SWS_PHASE_POSTCOPY_TRANSITION
+    } phase;
     bool postcopy_transition_completed;
     bool sync_teardown;  /* Only used to coordinate shutdown on error path. */
     libxl__save_helper_state shs;
@@ -3243,8 +3246,9 @@ _hidden void libxl__stream_write_init(libxl__stream_write_state *stream);
 _hidden void libxl__stream_write_start(libxl__egc *egc,
                                        libxl__stream_write_state *stream);
 _hidden void
-libxl__stream_write_postcopy_transition(libxl__egc *egc,
-                                        libxl__stream_write_state *stream);
+libxl__stream_write_start_postcopy_transition(
+    libxl__egc *egc,
+    libxl__stream_write_state *stream);
 _hidden void
 libxl__stream_write_start_checkpoint(libxl__egc *egc,
                                      libxl__stream_write_state *stream);

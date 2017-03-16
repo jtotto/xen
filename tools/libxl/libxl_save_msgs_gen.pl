@@ -24,14 +24,17 @@ our @msgs = (
                                                 'unsigned long', 'done',
                                                 'unsigned long', 'total'] ],
     [  3, 'srcxA',  "suspend", [] ],
-    [  4, 'srcxA',  "aftercopy", [] ],
-    [  5, 'srcxA',  "checkpoint", [] ],
-    [  6, 'srcxA',  "wait_checkpoint", [] ],
-    [  7, 'scxA',   "switch_qemu_logdirty",  [qw(int domid
+    [  4, 'scxW',   "should_begin_postcopy", [] ],
+    [  5, 'scxA',   "save_postcopy_transition", [] ],
+    [  6, 'rcx',    "restore_postcopy_transition", [] ],
+    [  7, 'srcxA',  "aftercopy", [] ],
+    [  8, 'srcxA',  "checkpoint", [] ],
+    [  9, 'srcxA',  "wait_checkpoint", [] ],
+    [ 10, 'scxA',   "switch_qemu_logdirty",  [qw(int domid
                                               unsigned enable)] ],
-    [  8, 'rcx',    "restore_results",       ['xen_pfn_t', 'store_gfn',
+    [ 11, 'rcx',    "restore_results",       ['xen_pfn_t', 'store_gfn',
                                               'xen_pfn_t', 'console_gfn'] ],
-    [  9, 'srW',    "complete",              [qw(int retval
+    [ 12, 'srW',    "complete",              [qw(int retval
                                                  int errnoval)] ],
 );
 

@@ -3,6 +3,10 @@
 
 #include <stdbool.h>
 
+#include <xenevtchn.h>
+
+#include <xen/vm_event.h>
+
 #include "xg_private.h"
 #include "xg_save_restore.h"
 #include "xc_dom.h"
@@ -441,14 +445,16 @@ int read_record(struct xc_sr_context *ctx, int fd, struct xc_sr_record *rec);
 /* XXX documentation */
 struct xc_sr_read_record_context
 {
+    struct xc_sr_context *ctx;
     size_t offset;
     struct xc_sr_rhdr rhdr;
     void *data;
 };
 
-static inline void read_record_init(struct xc_sr_read_record_context *rrctx)
+static inline void read_record_init(struct xc_sr_read_record_context *rrctx,
+                                    struct xc_sr_context *ctx)
 {
-    *rrctx = (struct xc_sr_read_record_context) { 0 };
+    *rrctx = (struct xc_sr_read_record_context) { .ctx = ctx };
 }
 
 int try_read_record(struct xc_sr_read_record_context *rrctx, int fd,
@@ -459,7 +465,7 @@ static inline void read_record_destroy(struct xc_sr_read_record_context *rrctx)
     free(rrctx->data);
 }
 
-int validate_pages_record(struct xc_sr_record *rec);
+int validate_pages_record(struct xc_sr_context *ctx, struct xc_sr_record *rec);
 
 /*
  * This would ideally be private in restore.c, but is needed by

@@ -758,6 +758,24 @@ static void domcreate_bootloader_done(libxl__egc *egc,
                                       libxl__bootloader_state *bl,
                                       int rc);
 
+/* If a postcopy migration is initiated by the sending side during a live
+ * migration, this function returns control of the stream to the stream reader
+ * so it can finish the libxl stream. */
+static void domcreate_postcopy_transition_callback(void *user);
+
+/* When the stream reader postcopy transition completes, this callback is
+ * invoked.  It transfers control of the restore stream back to the helper. */
+void domcreate_postcopy_transition_complete_callback(
+    libxl__egc *egc, libxl__stream_read_state *srs, int rc);
+
+/* In the case of a postcopy live migration, this callback indicates the
+ * completion of the restore helper (and therefore the postcopy memory stream).
+ * If the postcopy resume/unpause has already completed, this callback directly
+ * reports the overall result of the restore. */
+static void domcreate_postcopy_stream_done(libxl__egc *egc,
+                                           libxl__stream_read_state *srs,
+                                           int ret);
+
 static void domcreate_launch_dm(libxl__egc *egc, libxl__multidev *aodevs,
                                 int ret);
 
@@ -783,6 +801,10 @@ static void domcreate_complete(libxl__egc *egc,
 static void domcreate_destruction_cb(libxl__egc *egc,
                                      libxl__domain_destroy_state *dds,
                                      int rc);
+
+static void domcreate_report_result(libxl__egc *egc,
+                                    libxl__domain_create_state *dcs,
+                                    int rc);
 
 static void initiate_domain_create(libxl__egc *egc,
                                    libxl__domain_create_state *dcs)
@@ -1113,7 +1135,7 @@ static void domcreate_bootloader_done(libxl__egc *egc,
             /* When the restore helper initiates the postcopy transition, pick
              * up in domcreate_postcopy_transition_callback() and immediately
              * hand control back to the stream reader. */
-            callbacks->postcopy_transition =
+            callbacks->restore_postcopy_transition =
                 domcreate_postcopy_transition_callback;
 
             /* When the stream reader is finished reading the postcopy
@@ -1134,7 +1156,7 @@ static void domcreate_bootloader_done(libxl__egc *egc,
 
 /*----- postcopy live migration -----*/
 
-static int domcreate_postcopy_transition_callback(void *user)
+static void domcreate_postcopy_transition_callback(void *user)
 {
     libxl__save_helper_state *shs = user;
     libxl__domain_create_state *dcs = shs->caller_state;
@@ -1647,7 +1669,7 @@ static void domcreate_complete(libxl__egc *egc,
         dcs->guest_domid = -1;
     }
 
-    domcreate_finish(egc, dcs, rc);
+    domcreate_report_result(egc, dcs, rc);
 }
 
 static void domcreate_destruction_cb(libxl__egc *egc,
@@ -1660,13 +1682,15 @@ static void domcreate_destruction_cb(libxl__egc *egc,
     if (rc)
         LOGD(ERROR, dds->domid, "unable to destroy domain following failed creation");
 
-    domcreate_finish(egc, dcs, ERROR_FAIL);
+    domcreate_report_result(egc, dcs, ERROR_FAIL);
 }
 
-static void domcreate_finish(libxl__egc *egc,
-                             libxl__domain_create_state *dcs,
-                             int rc)
+static void domcreate_report_result(libxl__egc *egc,
+                                    libxl__domain_create_state *dcs,
+                                    int rc)
 {
+    EGC_GC;
+
     if (dcs->postcopy.resuming) {
         dcs->postcopy.resuming = false;
 
@@ -1688,7 +1712,7 @@ static void domcreate_finish(libxl__egc *egc,
                  * callback to find. */
                 dcs->postcopy.rc = rc;
 
-                libxl__stream_read_abort(egc, &dcs->sws, -1);
+                libxl__stream_read_abort(egc, &dcs->srs, -1);
             } else {
                 dcs->postcopy.resumed = true;
             }

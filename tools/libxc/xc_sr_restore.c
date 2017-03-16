@@ -1,6 +1,7 @@
 #include <arpa/inet.h>
 
 #include <assert.h>
+#include <poll.h>
 
 #include "xc_sr_common.h"
 
@@ -208,6 +209,7 @@ static int filter_pages(struct xc_sr_context *ctx, unsigned count,
                         /* OUT */ unsigned *nr_pages,
                         /* OUT */ xen_pfn_t **bpfns)
 {
+    xc_interface *xch = ctx->xch;
     unsigned i;
 
     *nr_pages = 0;
@@ -374,6 +376,7 @@ static int decode_pages_record(struct xc_sr_context *ctx,
                                /* OUT */ uint32_t **types,
                                /* OUT */ unsigned *pages_of_data)
 {
+    xc_interface *xch = ctx->xch;
     unsigned i;
     int rc = -1;
     xen_pfn_t pfn;
@@ -391,14 +394,14 @@ static int decode_pages_record(struct xc_sr_context *ctx,
 
     for ( i = 0; i < pages->count; ++i )
     {
-        pfn = pages->pfn[i] & PAGE_DATA_PFN_MASK;
+        pfn = pages->pfn[i] & REC_PFINFO_PFN_MASK;
         if ( !ctx->restore.ops.pfn_is_valid(ctx, pfn) )
         {
             ERROR("pfn %#"PRIpfn" (index %u) outside domain maximum", pfn, i);
             goto err;
         }
 
-        type = (pages->pfn[i] & PAGE_DATA_TYPE_MASK) >> 32;
+        type = (pages->pfn[i] & REC_PFINFO_TYPE_MASK) >> 32;
         if ( ((type >> XEN_DOMCTL_PFINFO_LTAB_SHIFT) >= 5) &&
              ((type >> XEN_DOMCTL_PFINFO_LTAB_SHIFT) <= 8) )
         {
@@ -409,10 +412,10 @@ static int decode_pages_record(struct xc_sr_context *ctx,
         else if ( type < XEN_DOMCTL_PFINFO_BROKEN )
             /* NOTAB and all L1 through L4 tables (including pinned) require the
              * migration of a page of real data. */
-            *pages_of_data++;
+            (*pages_of_data)++;
 
-        pfns[i] = pfn;
-        types[i] = type;
+        (*pfns)[i] = pfn;
+        (*types)[i] = type;
     }
 
  err:
@@ -428,6 +431,7 @@ static int decode_pages_record(struct xc_sr_context *ctx,
  */
 static int handle_page_data(struct xc_sr_context *ctx, struct xc_sr_record *rec)
 {
+    xc_interface *xch = ctx->xch;
     struct xc_sr_rec_pages_header *pages = rec->data;
     unsigned pages_of_data;
     int rc;
@@ -435,7 +439,7 @@ static int handle_page_data(struct xc_sr_context *ctx, struct xc_sr_record *rec)
     xen_pfn_t *pfns = NULL;
     uint32_t *types = NULL;
 
-    rc = validate_pages_record(rec);
+    rc = validate_pages_record(ctx, rec);
     if ( rc )
         goto err;
 
@@ -470,7 +474,7 @@ static struct xc_sr_pending_postcopy_request outstanding_sentinel;
 /* The address of this structure is used as a sentinel entry in
  * paging->pending_pfns to indicate that the page is ready and requests for it
  * can be satisfied immediately. */
-static struct xc_sr_pending_postcopy_requests ready_sentinel;
+static struct xc_sr_pending_postcopy_request ready_sentinel;
 
 /* An empty list is used in paging->pending_pfns to indicate that the given pfn
  * never at any point needed to be postcopy-migrated. */
@@ -509,7 +513,7 @@ static void mark_ppfn_ready(struct xc_sr_pending_postcopy_requests *ppfn)
 {
     assert(ppfn_outstanding(ppfn) || ppfn_requested(ppfn));
     LIBXC_SLIST_INIT(ppfn);
-    LIBXC_SLIST_INSERT_HEAD(ppfn, &ready_sentinel);
+    LIBXC_SLIST_INSERT_HEAD(ppfn, &ready_sentinel, link);
 }
 
 /* XXX postcopy begins */
@@ -520,7 +524,7 @@ static int postcopy_paging_setup(struct xc_sr_context *ctx)
     xc_interface *xch = ctx->xch;
 
     /* Sanity-check the migration stream. */
-    if ( !ctx->postcopy )
+    if ( !ctx->restore.postcopy )
     {
         ERROR("Received POSTCOPY_PFNS_BEGIN before POSTCOPY_BEGIN");
         return -1;
@@ -610,22 +614,22 @@ static void postcopy_paging_cleanup(struct xc_sr_context *ctx)
 
     if ( paging->paging_enabled )
     {
-        rc = xc_vm_event_control(xch, ctx->domid, XC_VM_EVENT_DISABLE,
-                                 XEN_DOMCTL_VM_EVENT_OP_PAGING, paging->port);
+        rc = xc_vm_event_control(xch, ctx->domid, XEN_VM_EVENT_DISABLE,
+                                 XEN_DOMCTL_VM_EVENT_OP_PAGING, NULL);
         if ( rc != 0 )
             ERROR("Failed to disable paging");
     }
 
     if ( paging->evtchn_bound )
     {
-        rc = xenevtchn_unbind(xch, paging->port);
+        rc = xenevtchn_unbind(paging->xce_handle, paging->port);
         if ( rc != 0 )
             ERROR("Failed to unbind event port");
     }
 
     if ( paging->evtchn_opened )
     {
-        rc = xenevtchn_close(xch);
+        rc = xenevtchn_close(paging->xce_handle);
         if ( rc != 0 )
             ERROR("Failed to close event channel");
     }
@@ -746,6 +750,7 @@ static int process_postcopy_pfns(struct xc_sr_context *ctx, unsigned count,
 static int handle_postcopy_pfns(struct xc_sr_context *ctx,
                                 struct xc_sr_record *rec)
 {
+    xc_interface *xch = ctx->xch;
     struct xc_sr_rec_pages_header *pages = rec->data;
     unsigned pages_of_data;
     int rc;
@@ -760,7 +765,7 @@ static int handle_postcopy_pfns(struct xc_sr_context *ctx,
         goto err;
     }
 
-    rc = validate_pages_record(rec);
+    rc = validate_pages_record(ctx, rec);
     if ( rc )
         goto err;
 
@@ -788,6 +793,7 @@ static int handle_postcopy_pfns(struct xc_sr_context *ctx,
 static int handle_postcopy_transition(struct xc_sr_context *ctx)
 {
     int rc;
+    xc_interface *xch = ctx->xch;
     void *cbdata = ctx->restore.callbacks->data;
 
     /* Sanity-check the migration stream. */
@@ -804,9 +810,11 @@ static int handle_postcopy_transition(struct xc_sr_context *ctx)
     ctx->restore.callbacks->restore_results(ctx->restore.xenstore_gfn,
                                             ctx->restore.console_gfn, cbdata);
 
-    rc = ctx->restore.callbacks->postcopy_transition(cbdata);
-    if ( rc )
-        ERROR("Failed to resume guest for postcopy transition");
+    /* Asynchronously resume the guest.  We need to be ready to immediately
+     * respond to paging requests that result from the resumption of the guest,
+     * its device model, etc, so we don't want to wait around for that to
+     * complete. */
+    ctx->restore.callbacks->restore_postcopy_transition(cbdata);
 
     return rc;
 }
@@ -815,10 +823,11 @@ static int postcopy_load_page(struct xc_sr_context *ctx, xen_pfn_t pfn,
                               void *page_data, /* OUT */ bool *put_responses)
 {
     int rc;
+    xc_interface *xch = ctx->xch;
     struct xc_sr_restore_paging *paging = &ctx->restore.paging;
     struct xc_sr_pending_postcopy_requests *ppfn = &paging->pending_pfns[pfn];
     struct xc_sr_pending_postcopy_request *request;
-    struct vm_event_response_t rsp = { .version = VM_EVENT_INTERFACE_VERSION };
+    vm_event_response_t rsp = { .version = VM_EVENT_INTERFACE_VERSION };
     vm_event_back_ring_t *back_ring = &paging->back_ring;
 
     assert(ppfn_outstanding(ppfn) || ppfn_requested(ppfn));
@@ -864,9 +873,9 @@ static int process_postcopy_page_data(struct xc_sr_context *ctx, unsigned count,
 {
     int rc;
     unsigned i;
+    xc_interface *xch = ctx->xch;
     struct xc_sr_restore_paging *paging = &ctx->restore.paging;
     struct xc_sr_pending_postcopy_requests *ppfn;
-    struct xc_sr_pending_postcopy_request *request;
     bool push_responses = false, load_put_responses = false;
 
     for ( i = 0; i < count; ++i )
@@ -927,6 +936,7 @@ static int process_postcopy_page_data(struct xc_sr_context *ctx, unsigned count,
 static int handle_postcopy_page_data(struct xc_sr_context *ctx,
                                      struct xc_sr_record *rec)
 {
+    xc_interface *xch = ctx->xch;
     struct xc_sr_rec_pages_header *pages = rec->data;
     unsigned pages_of_data;
     int rc = -1;
@@ -937,11 +947,11 @@ static int handle_postcopy_page_data(struct xc_sr_context *ctx,
     if ( rec->type != REC_TYPE_POSTCOPY_PAGE_DATA )
     {
         ERROR("Expected a POSTCOPY_PAGE_DATA record, received %s instead",
-              rec_to_str(rec->type));
+              rec_type_to_str(rec->type));
         goto err;
     }
 
-    rc = validate_pages_record(rec);
+    rc = validate_pages_record(ctx, rec);
     if ( rc )
         goto err;
 
@@ -979,25 +989,26 @@ static int forward_postcopy_paging_requests(struct xc_sr_context *ctx,
         .data = paging->batch_request_pfns
     };
 
-    return write_record(ctx->restore.send_back_fd, &rec);
+    return write_record(ctx, ctx->restore.send_back_fd, &rec);
 }
 
 static int handle_postcopy_paging_requests(struct xc_sr_context *ctx)
 {
     int rc;
+    xc_interface *xch = ctx->xch;
     struct xc_sr_restore_paging *paging = &ctx->restore.paging;
     struct xc_sr_pending_postcopy_requests *ppfn;
     struct xc_sr_pending_postcopy_request *preq;
+    vm_event_back_ring_t *back_ring = &paging->back_ring;
     vm_event_request_t req;
     vm_event_response_t rsp = { .version = VM_EVENT_INTERFACE_VERSION };
     xen_pfn_t pfn;
     bool put_responses = false;
     unsigned nr_batch_requests = 0;
 
-    while ( RING_HAS_UNCONSUMED_REQUESTS(&paging->back_ring) )
+    while ( RING_HAS_UNCONSUMED_REQUESTS(back_ring) )
     {
-        RING_COPY_REQUEST(&paging->back_ring, paging->back_ring->req_cons,
-                          &req);
+        RING_COPY_REQUEST(back_ring, back_ring->req_cons, &req);
         ++back_ring->req_cons;
 
         pfn = req.u.mem_paging.gfn;
@@ -1040,8 +1051,8 @@ static int handle_postcopy_paging_requests(struct xc_sr_context *ctx)
                 rc = -1;
                 goto err;
             }
-            ppfn->flags = req.u.mem_paging.flags;
-            ppfn->vcpu_id = req.vcpu_id;
+            preq->flags = req.u.mem_paging.flags;
+            preq->vcpu_id = req.vcpu_id;
 
             LIBXC_SLIST_INSERT_HEAD(ppfn, preq, link);
         }
@@ -1049,7 +1060,7 @@ static int handle_postcopy_paging_requests(struct xc_sr_context *ctx)
 
     if ( put_responses )
     {
-        RING_PUSH_RESPONSES(&paging->back_ring);
+        RING_PUSH_RESPONSES(back_ring);
 
         rc = xenevtchn_notify(paging->xce_handle, paging->port);
         if ( rc )
@@ -1079,15 +1090,16 @@ static int write_postcopy_complete_record(struct xc_sr_context *ctx)
 {
     struct xc_sr_record postcopy_complete = { REC_TYPE_POSTCOPY_COMPLETE };
 
-    return write_record(ctx->restore.send_back_fd, &postcopy_complete);
+    return write_record(ctx, ctx->restore.send_back_fd, &postcopy_complete);
 }
 
 static int postcopy_restore(struct xc_sr_context *ctx)
 {
     int rc;
     int recv_fd = ctx->fd;
-    int old_flags, nonblocking_flags;
+    int old_flags;
     int port;
+    xc_interface *xch = ctx->xch;
     struct xc_sr_restore_paging *paging = &ctx->restore.paging;
     struct xc_sr_read_record_context rrctx;
     struct xc_sr_record rec = { 0, 0, NULL };
@@ -1100,7 +1112,7 @@ static int postcopy_restore(struct xc_sr_context *ctx)
     assert(ctx->restore.postcopy);
     assert(paging->xce_handle);
 
-    read_record_init(&rrctx);
+    read_record_init(&rrctx, ctx);
 
     /* For the duration of this routine, configuring the receive stream as
      * non-blocking. */
@@ -1112,15 +1124,14 @@ static int postcopy_restore(struct xc_sr_context *ctx)
     }
 
     assert(!(old_flags & O_NONBLOCK));
-    flags = old_flags | O_NONBLOCK;
 
-    rc = fcntl(recv_fd, F_SETFL, flags);
+    rc = fcntl(recv_fd, F_SETFL, old_flags | O_NONBLOCK);
     if ( rc == -1 )
     {
         goto err;
     }
 
-    while ( ctx->restore.nr_pending_pfns )
+    while ( paging->nr_pending_pfns )
     {
         rc = poll(pfds, ARRAY_SIZE(pfds), -1);
         if ( rc < 0 )
@@ -1134,9 +1145,9 @@ static int postcopy_restore(struct xc_sr_context *ctx)
 
         /* Fill in any newly received page data first, on the off chance that
          * new pager requests are for that data. */
-        if ( rc && fd[1].revents & POLLIN )
+        if ( rc && pfds[1].revents & POLLIN )
         {
-            while ( ctx->restore.nr_pending_pfns )
+            while ( paging->nr_pending_pfns )
             {
                 rc = try_read_record(&rrctx, recv_fd, &rec);
                 if ( rc )
@@ -1151,7 +1162,7 @@ static int postcopy_restore(struct xc_sr_context *ctx)
                 else
                 {
                     read_record_destroy(&rrctx);
-                    read_record_init(&rrctx);
+                    read_record_init(&rrctx, ctx);
 
                     rc = handle_postcopy_page_data(ctx, &rec);
                     if ( rc )
@@ -1163,9 +1174,9 @@ static int postcopy_restore(struct xc_sr_context *ctx)
             }
         }
 
-        if ( rc && fd[0].revents & POLLIN )
+        if ( rc && pfds[0].revents & POLLIN )
         {
-            port = xenevtchn_pending(xce);
+            port = xenevtchn_pending(paging->xce_handle);
             if ( port == -1 )
             {
                 ERROR("Failed to read port from pager event channel");
@@ -1173,7 +1184,7 @@ static int postcopy_restore(struct xc_sr_context *ctx)
                 goto err;
             }
 
-            rc = xenevtchn_unmask(xce, port);
+            rc = xenevtchn_unmask(paging->xce_handle, port);
             if ( rc != 0 )
             {
                 ERROR("Failed to unmask pager event channel port");
@@ -1203,7 +1214,7 @@ static int postcopy_restore(struct xc_sr_context *ctx)
     }
     else if ( rec.type != REC_TYPE_END )
     {
-        ERROR("Expected end of stream, received %s", rec_to_str(rec.type));
+        ERROR("Expected end of stream, received %s", rec_type_to_str(rec.type));
         rc = -1;
         goto err;
     }
@@ -1273,7 +1284,7 @@ static int send_checkpoint_dirty_pfn_list(struct xc_sr_context *ctx)
     rec.data = pfns;
     rec.length = count * sizeof(*pfns);
 
-    rc = write_record(ctx-restore.send_back_fd, &rec);
+    rc = write_record(ctx, ctx->restore.send_back_fd, &rec);
     if ( rc )
         goto err;
 
@@ -1435,10 +1446,10 @@ static int process_record(struct xc_sr_context *ctx, struct xc_sr_record *rec)
         break;
 
     case REC_TYPE_POSTCOPY_BEGIN:
-        if ( ctx->postcopy )
+        if ( ctx->restore.postcopy )
             rc = -1;
         else
-            ctx->postcopy = true;
+            ctx->restore.postcopy = true;
         break;
 
     case REC_TYPE_POSTCOPY_PFNS_BEGIN:
@@ -1526,7 +1537,7 @@ static void cleanup(struct xc_sr_context *ctx)
         xc_hypercall_buffer_free_pages(xch, dirty_bitmap,
                                    NRPAGES(bitmap_size(ctx->restore.p2m_size)));
 
-    if ( ctx->postcopy )
+    if ( ctx->restore.postcopy )
         postcopy_paging_cleanup(ctx);
 
     free(ctx->restore.buffered_records);

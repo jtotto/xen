@@ -151,6 +151,7 @@ int try_read_record(struct xc_sr_read_record_context *rrctx, int fd,
                     struct xc_sr_record *rec)
 {
     int rc;
+    xc_interface *xch = rrctx->ctx->xch;
     size_t offset_out, dataoff, datasz;
 
     /* If the header isn't yet complete, attempt to finish it first. */
@@ -213,8 +214,9 @@ int try_read_record(struct xc_sr_read_record_context *rrctx, int fd,
     return 0;
 }
 
-int validate_pages_record(struct xc_sr_record *rec)
+int validate_pages_record(struct xc_sr_context *ctx, struct xc_sr_record *rec)
 {
+    xc_interface *xch = ctx->xch;
     struct xc_sr_rec_pages_header *pages = rec->data;
 
     if ( rec->type != REC_TYPE_PAGE_DATA &&
@@ -222,7 +224,7 @@ int validate_pages_record(struct xc_sr_record *rec)
          rec->type != REC_TYPE_POSTCOPY_FAULT )
     {
         ERROR("Pages record type expected, instead received record of type "
-              "%#x (%s)", rec->type, rec_type_to_str(rec->type));
+              "%08x (%s)", rec->type, rec_type_to_str(rec->type));
         return -1;
     }
     else if ( rec->length < sizeof(*pages) )
@@ -240,8 +242,8 @@ int validate_pages_record(struct xc_sr_record *rec)
     else if ( rec->length < sizeof(*pages) + (pages->count * sizeof(uint64_t)) )
     {
         ERROR("%s record (length %u) too short to contain %u"
-              " pfns worth of information", rec->length, pages->count,
-              rec_type_to_str(rec->type));
+              " pfns worth of information", rec_type_to_str(rec->type),
+              rec->length, pages->count);
         return -1;
     }
 
@@ -254,7 +256,7 @@ static void __attribute__((unused)) build_assertions(void)
     BUILD_BUG_ON(sizeof(struct xc_sr_dhdr) != 16);
     BUILD_BUG_ON(sizeof(struct xc_sr_rhdr) != 8);
 
-    BUILD_BUG_ON(sizeof(struct xc_sr_rec_page_data_header)  != 8);
+    BUILD_BUG_ON(sizeof(struct xc_sr_rec_pages_header)      != 8);
     BUILD_BUG_ON(sizeof(struct xc_sr_rec_x86_pv_info)       != 8);
     BUILD_BUG_ON(sizeof(struct xc_sr_rec_x86_pv_p2m_frames) != 8);
     BUILD_BUG_ON(sizeof(struct xc_sr_rec_x86_pv_vcpu_hdr)   != 8);

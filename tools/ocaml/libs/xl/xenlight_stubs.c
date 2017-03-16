@@ -611,7 +611,7 @@ value stub_libxl_domain_suspend(value ctx, value domid, value fd, value async, v
 	libxl_asyncop_how *ao_how = aohow_val(async);
 
 	caml_enter_blocking_section();
-	ret = libxl_domain_suspend(CTX, c_domid, c_fd, 0, ao_how);
+	ret = libxl_domain_suspend(CTX, c_domid, c_fd, 0, -1, LIBXL_SUSPEND_PRECOPY_FULL, ao_how);
 	caml_leave_blocking_section();
 
 	free(ao_how);

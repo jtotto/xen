@@ -132,6 +132,8 @@
 /* Success/error/cleanup handling. */
 static void stream_complete(libxl__egc *egc,
                             libxl__stream_read_state *stream, int rc);
+static void postcopy_transition_done(libxl__egc *egc,
+                                     libxl__stream_read_state *stream, int rc);
 static void checkpoint_done(libxl__egc *egc,
                             libxl__stream_read_state *stream, int rc);
 static void stream_done(libxl__egc *egc,
@@ -823,7 +825,7 @@ static void checkpoint_done(libxl__egc *egc,
 
     if (rc == 0)
         ret = XGR_CHECKPOINT_SUCCESS;
-    else if (stream->phase == SRS_PHASE_BUFFERING)
+    else if (stream->phase == SRS_PHASE_CHECKPOINT_BUFFERING)
         ret = XGR_CHECKPOINT_FAILOVER;
     else
         ret = XGR_CHECKPOINT_ERROR;
