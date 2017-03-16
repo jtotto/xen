@@ -420,7 +420,6 @@ static int send_checkpoint_dirty_pfn_list(struct xc_sr_context *ctx)
     int rc = -1;
     unsigned count, written;
     uint64_t i, *pfns = NULL;
-    struct iovec *iov = NULL;
     xc_shadow_op_stats_t stats = { 0, ctx->restore.p2m_size };
     struct xc_sr_record rec =
     {
@@ -467,35 +466,17 @@ static int send_checkpoint_dirty_pfn_list(struct xc_sr_context *ctx)
         pfns[written++] = i;
     }
 
-    /* iovec[] for writev(). */
-    iov = malloc(3 * sizeof(*iov));
-    if ( !iov )
-    {
-        ERROR("Unable to allocate memory for sending dirty bitmap");
-        goto err;
-    }
-
+    rec.data = pfns;
     rec.length = count * sizeof(*pfns);
 
-    iov[0].iov_base = &rec.type;
-    iov[0].iov_len = sizeof(rec.type);
-
-    iov[1].iov_base = &rec.length;
-    iov[1].iov_len = sizeof(rec.length);
-
-    iov[2].iov_base = pfns;
-    iov[2].iov_len = count * sizeof(*pfns);
-
-    if ( writev_exact(ctx->restore.send_back_fd, iov, 3) )
-    {
-        PERROR("Failed to write dirty bitmap to stream");
+    rc = write_record(ctx, ctx->restore.send_back_fd, &rec);
+    if ( rc )
         goto err;
-    }
 
     rc = 0;
+
  err:
     free(pfns);
-    free(iov);
     return rc;
 }
 
