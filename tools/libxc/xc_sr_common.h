@@ -408,7 +408,8 @@ struct xc_sr_record
  *
  * Returns 0 on success and non0 on failure.
  */
-int write_split_record(int fd, struct xc_sr_record *rec, void *buf, size_t sz);
+int write_split_record(struct xc_sr_context *ctx, int fd,
+                       struct xc_sr_record *rec, void *buf, size_t sz);
 
 /*
  * Writes a record to the stream, applying correct padding where appropriate.
@@ -417,9 +418,10 @@ int write_split_record(int fd, struct xc_sr_record *rec, void *buf, size_t sz);
  *
  * Returns 0 on success and non0 on failure.
  */
-static inline int write_record(int fd, struct xc_sr_record *rec)
+static inline int write_record(struct xc_sr_context *ctx, int fd,
+                               struct xc_sr_record *rec)
 {
-    return write_split_record(fd, rec, NULL, 0);
+    return write_split_record(ctx, fd, rec, NULL, 0);
 }
 
 /*

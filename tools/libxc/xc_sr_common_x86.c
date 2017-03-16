@@ -18,7 +18,7 @@ int write_tsc_info(struct xc_sr_context *ctx)
         return -1;
     }
 
-    return write_record(ctx->fd, &rec);
+    return write_record(ctx, ctx->fd, &rec);
 }
 
 int handle_tsc_info(struct xc_sr_context *ctx, struct xc_sr_record *rec)
