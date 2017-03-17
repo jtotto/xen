@@ -164,6 +164,7 @@ struct domain_create {
     char *colo_proxy_script;
     int migrate_fd; /* -1 means none */
     int send_back_fd; /* -1 means none */
+    bool *postcopy_resumed;
     char **migration_domname_r; /* from malloc */
 };
 
@@ -2806,6 +2807,7 @@ static int create_domain(struct domain_create *dom_info)
     const char *config_source = NULL;
     const char *restore_source = NULL;
     int migrate_fd = dom_info->migrate_fd;
+    bool *postcopy_resumed = dom_info->postcopy_resumed;
     bool config_in_json;
 
     int i;
@@ -2825,6 +2827,9 @@ static int create_domain(struct domain_create *dom_info)
     uint32_t domid_soft_reset = INVALID_DOMID;
 
     int restoring = (restore_file || (migrate_fd >= 0));
+
+    if (postcopy_resumed)
+        *postcopy_resumed = false;
 
     libxl_domain_config_init(&d_config);
 
@@ -3031,8 +3036,8 @@ start:
 
         ret = libxl_domain_create_restore(ctx, &d_config,
                                           &domid, restore_fd,
-                                          send_back_fd, &params,
-                                          0, autoconnect_console_how);
+                                          send_back_fd, postcopy_resumed,
+                                          &params, 0, autoconnect_console_how);
 
         libxl_domain_restore_params_dispose(&params);
 
@@ -4528,8 +4533,7 @@ static int save_domain(uint32_t domid, const char *filename, int checkpoint,
 
     save_domain_core_writeconfig(fd, filename, config_data, config_len);
 
-    int rc = libxl_domain_suspend(ctx, domid, fd, 0, -1, 
-                                  LIBXL_SUSPEND_PRECOPY_FULL, NULL);
+    int rc = libxl_domain_suspend(ctx, domid, fd, 0, NULL);
     close(fd);
 
     if (rc < 0) {
@@ -4702,6 +4706,7 @@ static void migrate_domain(uint32_t domid, const char *rune, int debug,
     char rc_buf;
     uint8_t *config_data;
     int config_len, flags = LIBXL_SUSPEND_LIVE;
+    bool postcopy_transitioned;
 
     save_domain_core_begin(domid, override_config_file,
                            &config_data, &config_len);
@@ -4721,15 +4726,31 @@ static void migrate_domain(uint32_t domid, const char *rune, int debug,
 
     if (debug)
         flags |= LIBXL_SUSPEND_DEBUG;
-    rc = libxl_domain_suspend(ctx, domid, send_fd, flags, recv_fd, 
-                              precopy_period, NULL);
+
+    if (precopy_period > LIBXL_MIGRATE_PRECOPY_FULL)
+        rc = libxl_domain_postcopy_live_migrate(ctx, domid, send_fd, flags,
+                                                recv_fd, precopy_period,
+                                                &postcopy_transitioned, NULL);
+
+    else
+        rc = libxl_domain_suspend(ctx, domid, send_fd, flags, NULL);
+
     if (rc) {
         fprintf(stderr, "migration sender: libxl_domain_suspend failed"
                 " (rc=%d)\n", rc);
-        if (rc == ERROR_GUEST_TIMEDOUT)
+        if (postcopy_transitioned)
+            goto failed_postcopy;
+        else if (rc == ERROR_GUEST_TIMEDOUT)
             goto failed_suspend;
         else
             goto failed_resume;
+    }
+
+    /* No need for additional ceremony if we already resumed the guest as part
+     * of a postcopy live migration. */
+    if (postcopy_transitioned) {
+        fprintf(stderr, "Migration successful.\n");
+        exit(EXIT_SUCCESS);
     }
 
     //fprintf(stderr, "migration sender: Transfer complete.\n");
@@ -4830,6 +4851,16 @@ static void migrate_domain(uint32_t domid, const char *rune, int debug,
     close(send_fd);
     migration_child_report(recv_fd);
     exit(EXIT_FAILURE);
+
+ failed_postcopy:
+    fprintf(stderr,
+ "** Migration failed during memory postcopy **\n"
+ "It's possible that the guest has executed/is executing at the destination,\n"
+ " so resuming it here now may be unsafe.\n");
+
+    close(send_fd);
+    migration_child_report(recv_fd);
+    exit(EXIT_FAILURE);
 }
 
 static void migrate_receive(int debug, int daemonize, int monitor,
@@ -4842,6 +4873,7 @@ static void migrate_receive(int debug, int daemonize, int monitor,
     int rc, rc2;
     char rc_buf;
     char *migration_domname;
+    bool postcopy_resumed;
     struct domain_create dom_info;
 
     signal(SIGPIPE, SIG_IGN);
@@ -4861,6 +4893,7 @@ static void migrate_receive(int debug, int daemonize, int monitor,
     dom_info.paused = 1;
     dom_info.migrate_fd = recv_fd;
     dom_info.send_back_fd = send_fd;
+    dom_info.postcopy_resumed = &postcopy_resumed;
     dom_info.migration_domname_r = &migration_domname;
     dom_info.checkpointed_stream = checkpointed;
     dom_info.colo_proxy_script = colo_proxy_script;
@@ -4920,6 +4953,13 @@ static void migrate_receive(int debug, int daemonize, int monitor,
     default:
         /* do nothing */
         break;
+    }
+
+    /* No need for additional ceremony if we already resumed the guest as part
+     * of a postcopy live migration. */
+    if (postcopy_resumed) {
+        fprintf(stderr, "migration target: Domain started successsfully.\n");
+        exit(EXIT_SUCCESS);
     }
 
     fprintf(stderr, "migration target: Transfer complete,"
@@ -5147,7 +5187,7 @@ int main_migrate(int argc, char **argv)
     char *rune = NULL;
     char *host;
     int opt, daemonize = 1, monitor = 1, debug = 0, pause_after_migration = 0;
-    int precopy_period = LIBXL_SUSPEND_PRECOPY_FULL;
+    int precopy_period = LIBXL_MIGRATE_PRECOPY_FULL;
     static struct option opts[] = {
         {"debug", 0, 0, 0x100},
         {"live", 0, 0, 0x200},

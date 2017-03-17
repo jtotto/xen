@@ -298,7 +298,8 @@ static void postcopy_transition_done(libxl__egc *egc,
     /* When we mark the postcopy transition as completed, we give up hope of
      * recovering the guest in the event of a failure because it may have been
      * permitted to execute at the destination. */
-    dss->postcopy_transition_completed = !rc;
+    if (dss->postcopy_transitioned)
+        *dss->postcopy_transitioned = !rc;
     libxl__xc_domain_saverestore_async_callback_done(egc, &sws->shs, !rc);
 }
 
@@ -445,11 +446,11 @@ void libxl__domain_save(libxl__egc *egc, libxl__domain_save_state *dss)
 
         if (live) {
             switch (dss->precopy_period) {
-            case LIBXL_SUSPEND_PRECOPY_FULL:
+            case LIBXL_MIGRATE_PRECOPY_FULL:
                 /* Never request a transition to the postcopy phase. */
                 dss->request_postcopy = false;
                 break;
-            case LIBXL_SUSPEND_PRECOPY_NONE:
+            case LIBXL_MIGRATE_PRECOPY_NONE:
                 /* Request a postcopy transition immediately. */
                 dss->request_postcopy = true;
                 break;

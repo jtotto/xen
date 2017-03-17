@@ -486,9 +486,10 @@ static void domain_suspend_cb(libxl__egc *egc,
 
 }
 
-int libxl_domain_suspend(libxl_ctx *ctx, uint32_t domid, int fd, int flags,
-                         int recv_fd, int precopy_period,
-                         const libxl_asyncop_how *ao_how)
+static int do_domain_suspend(libxl_ctx *ctx, uint32_t domid, int fd, int flags,
+                             int recv_fd, int precopy_period,
+                             bool *postcopy_transitioned, /* OUT */
+                             const libxl_asyncop_how *ao_how)
 {
     AO_CREATE(ctx, domid, ao_how);
     int rc;
@@ -509,6 +510,7 @@ int libxl_domain_suspend(libxl_ctx *ctx, uint32_t domid, int fd, int flags,
     dss->fd = fd;
     dss->recv_fd = recv_fd;
     dss->precopy_period = precopy_period;
+    dss->postcopy_transitioned = postcopy_transitioned;
     dss->type = type;
     dss->live = flags & LIBXL_SUSPEND_LIVE;
     dss->debug = flags & LIBXL_SUSPEND_DEBUG;
@@ -524,6 +526,29 @@ int libxl_domain_suspend(libxl_ctx *ctx, uint32_t domid, int fd, int flags,
 
  out_err:
     return AO_CREATE_FAIL(rc);
+}
+
+int libxl_domain_suspend(libxl_ctx *ctx, uint32_t domid, int fd, int flags,
+                         const libxl_asyncop_how *ao_how)
+{
+    return do_domain_suspend(ctx, domid, fd, flags, /* recv_fd */ -1,
+                             LIBXL_MIGRATE_PRECOPY_FULL,
+                             /* postcopy_transitioned */ NULL, ao_how);
+}
+
+int libxl_domain_postcopy_live_migrate(libxl_ctx *ctx, uint32_t domid, int fd,
+                                       int flags, int recv_fd,
+                                       int precopy_period,
+                                       bool *postcopy_transitioned, /* OUT */
+                                       const libxl_asyncop_how *ao_how)
+{
+    flags |= LIBXL_SUSPEND_LIVE;
+
+    if (postcopy_transitioned)
+        *postcopy_transitioned = false;
+
+    return do_domain_suspend(ctx, domid, fd, flags, recv_fd, precopy_period,
+                             postcopy_transitioned, ao_how);
 }
 
 int libxl_domain_pause(libxl_ctx *ctx, uint32_t domid)

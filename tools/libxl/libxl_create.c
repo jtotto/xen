@@ -1701,6 +1701,8 @@ static void domcreate_report_result(libxl__egc *egc,
         } else {
             /* If we haven't yet failed, try to unpause the guest. */
             rc = rc ?: libxl_domain_unpause(CTX, dcs->guest_domid);
+            if (dcs->postcopy_resumed)
+                *dcs->postcopy_resumed = !rc;
 
             if (dcs->postcopy.stream_done) {
                 /* The stream finished successfully, so we can report our local
@@ -1746,6 +1748,7 @@ static void domain_create_cb(libxl__egc *egc,
 
 static int do_domain_create(libxl_ctx *ctx, libxl_domain_config *d_config,
                             uint32_t *domid, int restore_fd, int send_back_fd,
+                            bool *postcopy_resumed, /* OUT */
                             const libxl_domain_restore_params *params,
                             const char *colo_proxy_script,
                             const libxl_asyncop_how *ao_how,
@@ -1754,6 +1757,9 @@ static int do_domain_create(libxl_ctx *ctx, libxl_domain_config *d_config,
     AO_CREATE(ctx, 0, ao_how);
     libxl__app_domain_create_state *cdcs;
     int rc;
+
+    if (postcopy_resumed)
+        *postcopy_resumed = false;
 
     GCNEW(cdcs);
     cdcs->dcs.ao = ao;
@@ -1769,6 +1775,7 @@ static int do_domain_create(libxl_ctx *ctx, libxl_domain_config *d_config,
                                          &cdcs->dcs.restore_fdfl);
         if (rc < 0) goto out_err;
     }
+    cdcs->dcs.postcopy_resumed = postcopy_resumed;
     cdcs->dcs.callback = domain_create_cb;
     cdcs->dcs.domid_soft_reset = INVALID_DOMID;
     cdcs->dcs.colo_proxy_script = colo_proxy_script;
@@ -1959,13 +1966,13 @@ int libxl_domain_create_new(libxl_ctx *ctx, libxl_domain_config *d_config,
                             const libxl_asyncprogress_how *aop_console_how)
 {
     unset_disk_colo_restore(d_config);
-    return do_domain_create(ctx, d_config, domid, -1, -1, NULL, NULL,
+    return do_domain_create(ctx, d_config, domid, -1, -1, NULL, NULL, NULL,
                             ao_how, aop_console_how);
 }
 
 int libxl_domain_create_restore(libxl_ctx *ctx, libxl_domain_config *d_config,
                                 uint32_t *domid, int restore_fd,
-                                int send_back_fd,
+                                int send_back_fd, bool *postcopy_resumed,
                                 const libxl_domain_restore_params *params,
                                 const libxl_asyncop_how *ao_how,
                                 const libxl_asyncprogress_how *aop_console_how)
@@ -1980,7 +1987,8 @@ int libxl_domain_create_restore(libxl_ctx *ctx, libxl_domain_config *d_config,
     }
 
     return do_domain_create(ctx, d_config, domid, restore_fd, send_back_fd,
-                            params, colo_proxy_script, ao_how, aop_console_how);
+                            postcopy_resumed, params, colo_proxy_script, ao_how,
+                            aop_console_how);
 }
 
 int libxl_domain_soft_reset(libxl_ctx *ctx,

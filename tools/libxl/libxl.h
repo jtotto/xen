@@ -1290,6 +1290,7 @@ int libxl_domain_create_new(libxl_ctx *ctx, libxl_domain_config *d_config,
 int libxl_domain_create_restore(libxl_ctx *ctx, libxl_domain_config *d_config,
                                 uint32_t *domid, int restore_fd,
                                 int send_back_fd,
+                                bool *postcopy_resumed, /* OUT */
                                 const libxl_domain_restore_params *params,
                                 const libxl_asyncop_how *ao_how,
                                 const libxl_asyncprogress_how *aop_console_how)
@@ -1309,8 +1310,9 @@ static inline int libxl_domain_create_restore_0x040200(
 
     libxl_domain_restore_params_init(&params);
 
-    ret = libxl_domain_create_restore(
-        ctx, d_config, domid, restore_fd, -1, &params, ao_how, aop_console_how);
+    ret = libxl_domain_create_restore(ctx, d_config, domid, restore_fd,
+                                      -1, NULL, &params, ao_how,
+                                      aop_console_how);
 
     libxl_domain_restore_params_dispose(&params);
     return ret;
@@ -1330,10 +1332,30 @@ static inline int libxl_domain_create_restore_0x040400(
     LIBXL_EXTERNAL_CALLERS_ONLY
 {
     return libxl_domain_create_restore(ctx, d_config, domid, restore_fd,
-                                       -1, params, ao_how, aop_console_how);
+                                       -1, NULL, params, ao_how,
+                                       aop_console_how);
 }
 
 #define libxl_domain_create_restore libxl_domain_create_restore_0x040400
+
+#elif defined(LIBXL_API_VERSION) && LIBXL_API_VERSION >= 0x040700 \
+                                 && LIBXL_API_VERSION < 0x040900
+
+static inline int libxl_domain_create_restore_0x040700(
+    libxl_ctx *ctx, libxl_domain_config *d_config,
+    uint32_t *domid, int restore_fd,
+    int send_back_fd,
+    const libxl_domain_restore_params *params,
+    const libxl_asyncop_how *ao_how,
+    const libxl_asyncprogress_how *aop_console_how)
+    LIBXL_EXTERNAL_CALLERS_ONLY
+{
+    return libxl_domain_create_restore(ctx, d_config, domid, restore_fd,
+                                       -1, NULL, params, ao_how,
+                                       aop_console_how);
+}
+
+#define libxl_domain_create_restore libxl_domain_create_restore_0x040700
 
 #endif
 
@@ -1364,31 +1386,23 @@ int libxl_retrieve_domain_configuration(libxl_ctx *ctx, uint32_t domid,
 
 int libxl_domain_suspend(libxl_ctx *ctx, uint32_t domid, int fd,
                          int flags, /* LIBXL_SUSPEND_* */
-                         int recv_fd, int precopy_period,
                          const libxl_asyncop_how *ao_how)
                          LIBXL_EXTERNAL_CALLERS_ONLY;
 #define LIBXL_SUSPEND_DEBUG 1
 #define LIBXL_SUSPEND_LIVE 2
 
-#define LIBXL_SUSPEND_PRECOPY_FULL (-1)
-#define LIBXL_SUSPEND_PRECOPY_NONE 0
-#define LIBXL_SUSPEND_PRECOPY_PERIOD_MS(period) period
+/* XXX explain the difference in failure semantics */
+int libxl_domain_postcopy_live_migrate(libxl_ctx *ctx, uint32_t domid, int fd,
+                                       int flags, /* LIBXL_SUSPEND_* */
+                                       int recv_fd, int precopy_period,
+                                       bool *postcopy_transitioned, /* OUT */
+                                       const libxl_asyncop_how *ao_how)
+                                       LIBXL_EXTERNAL_CALLERS_ONLY;
 
-#if defined(LIBXL_API_VERSION) && LIBXL_API_VERSION < 0x040800
-
-static inline int LIBXL_EXTERNAL_CALLERS_ONLY libxl_domain_suspend_0x040700(
-    libxl_ctx *ctx, uint32_t domid, int fd,
-    int flags, /* LIBXL_SUSPEND_* */
-    const libxl_asyncop_how *ao_how)
-{
-    return libxl_domain_suspend(ctx, domid, fd, flags,
-                                -1 /* recv_fd */, LIBXL_SUSPEND_PRECOPY_FULL,
-                                ao_how);
-}
-
-#define libxl_domain_suspend libxl_domain_suspend_0x040700
-
-#endif
+/* PRECOPY_NONE and PRECOPY_PERIOD_MS(0) are intended to be equivalent */
+#define LIBXL_MIGRATE_PRECOPY_FULL (-1)
+#define LIBXL_MIGRATE_PRECOPY_NONE 0
+#define LIBXL_MIGRATE_PRECOPY_PERIOD_MS(period) period
 
 /* @param suspend_cancel [from xenctrl.h:xc_domain_resume( @param fast )]
  *   If this parameter is true, use co-operative resume. The guest

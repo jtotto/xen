@@ -3316,7 +3316,7 @@ struct libxl__domain_save_state {
     int precopy_period;
     libxl__ev_time precopy_timer;
     bool request_postcopy;
-    bool postcopy_transition_completed;
+    bool *postcopy_transitioned;
     libxl_domain_type type;
     int live;
     int debug;
@@ -3714,6 +3714,7 @@ struct libxl__domain_create_state {
     int restore_fd, libxc_fd;
     int restore_fdfl; /* original flags of restore_fd */
     int send_back_fd;
+    bool *postcopy_resumed;
     libxl_domain_restore_params restore_params;
     uint32_t domid_soft_reset;
     struct {

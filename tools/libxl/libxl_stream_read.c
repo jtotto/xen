@@ -595,6 +595,13 @@ static bool process_record(libxl__egc *egc,
 
     LOG(DEBUG, "Record: %u, length %u", rec->hdr.type, rec->hdr.length);
 
+    if (stream->postcopy_transition_completed &&
+        rec->hdr.type != REC_TYPE_END) {
+        rc = ERROR_FAIL;
+        LOG(ERROR, "Received non-end record after postcopy transition");
+        goto err;
+    }
+
     switch (rec->hdr.type) {
 
     case REC_TYPE_END:
@@ -644,6 +651,15 @@ static bool process_record(libxl__egc *egc,
         }
 
         write_emulator_blob(egc, stream, rec);
+        break;
+
+    case REC_TYPE_POSTCOPY_TRANSITION_END:
+        if (stream->phase != SRS_PHASE_POSTCOPY_TRANSITION) {
+            LOG(ERROR, "Unexpected POSTCOPY_TRANSITION_END record in stream");
+            rc = ERROR_FAIL;
+            goto err;
+        }
+        postcopy_transition_done(egc, stream, 0);
         break;
 
     case REC_TYPE_CHECKPOINT_END:
