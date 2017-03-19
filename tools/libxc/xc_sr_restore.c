@@ -239,7 +239,7 @@ static int filter_pages(struct xc_sr_context *ctx, unsigned count,
         case XEN_DOMCTL_PFINFO_L4TAB:
         case XEN_DOMCTL_PFINFO_L4TAB | XEN_DOMCTL_PFINFO_LPINTAB:
 
-            *bpfns[*nr_pages++] = pfns[i];
+            (*bpfns)[(*nr_pages)++] = pfns[i];
             break;
         }
     }
@@ -378,7 +378,6 @@ static int decode_pages_record(struct xc_sr_context *ctx,
 {
     xc_interface *xch = ctx->xch;
     unsigned i;
-    int rc = -1;
     xen_pfn_t pfn;
     uint32_t type;
 
@@ -418,11 +417,18 @@ static int decode_pages_record(struct xc_sr_context *ctx,
         (*types)[i] = type;
     }
 
+    return 0;
+
  err:
     free(*pfns);
-    free(*types);
+    *pfns = NULL;
 
-    return rc;
+    free(*types);
+    *types = NULL;
+
+    *pages_of_data = 0;
+
+    return -1;
 }
 
 /*
