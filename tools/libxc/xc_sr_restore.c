@@ -846,7 +846,7 @@ static int handle_postcopy_transition(struct xc_sr_context *ctx)
 }
 
 static int postcopy_load_page(struct xc_sr_context *ctx, xen_pfn_t pfn,
-                              void *page_data, /* OUT */ bool *put_responses)
+                              void *page_data)
 {
     int rc;
     xc_interface *xch = ctx->xch;
@@ -857,7 +857,6 @@ static int postcopy_load_page(struct xc_sr_context *ctx, xen_pfn_t pfn,
     vm_event_back_ring_t *back_ring = &paging->back_ring;
 
     assert(ppfn_outstanding(ppfn) || ppfn_requested(ppfn));
-    *put_responses = ppfn_requested(ppfn);
 
     memcpy(paging->buffer, page_data, PAGE_SIZE);
     rc = xc_mem_paging_load(ctx->xch, ctx->domid, pfn, paging->buffer);
@@ -910,7 +909,7 @@ static int process_postcopy_page_data(struct xc_sr_context *ctx, unsigned count,
     xc_interface *xch = ctx->xch;
     struct xc_sr_restore_paging *paging = &ctx->restore.paging;
     struct xc_sr_pending_postcopy_requests *ppfn;
-    bool push_responses = false, load_put_responses = false;
+    bool push_responses = false;
 
     for ( i = 0; i < count; ++i )
     {
@@ -942,13 +941,13 @@ static int process_postcopy_page_data(struct xc_sr_context *ctx, unsigned count,
                     IPRINTF("Received requested pfn %"PRI_xen_pfn, pfns[i]);
                 }
 
-                rc = postcopy_load_page(ctx, pfns[i], page_data,
-                                        &load_put_responses);
+                push_responses = (push_responses || ppfn_requested(ppfn));
+
+                rc = postcopy_load_page(ctx, pfns[i], page_data);
                 if ( rc )
                     return rc;
 
                 page_data += PAGE_SIZE;
-                push_responses = (push_responses || load_put_responses);
             }
             break;
         }
@@ -1045,6 +1044,8 @@ static int handle_postcopy_paging_requests(struct xc_sr_context *ctx)
     bool put_responses = false;
     unsigned nr_batch_requests = 0;
 
+    IPRINTF("Handling postcopy paging requests");
+
     while ( RING_HAS_UNCONSUMED_REQUESTS(back_ring) )
     {
         RING_COPY_REQUEST(back_ring, back_ring->req_cons, &req);
@@ -1100,12 +1101,14 @@ static int handle_postcopy_paging_requests(struct xc_sr_context *ctx)
                 rc = -1;
                 goto err;
             }
-            preq->flags = req.u.mem_paging.flags;
+            preq->flags = req.flags;
             preq->vcpu_id = req.vcpu_id;
 
             LIBXC_SLIST_INSERT_HEAD(ppfn, preq, link);
         }
     }
+
+    IPRINTF("Handled postcopy paging requests");
 
     if ( put_responses )
     {
@@ -1197,35 +1200,29 @@ static int postcopy_restore(struct xc_sr_context *ctx)
          * new pager requests are for that data. */
         if ( rc && pfds[1].revents & POLLIN )
         {
-            while ( paging->nr_pending_pfns )
+            rc = try_read_record(&rrctx, recv_fd, &rec);
+            if ( rc && (errno != EAGAIN) && (errno != EWOULDBLOCK) )
             {
-                rc = try_read_record(&rrctx, recv_fd, &rec);
+                goto err;
+            }
+            else if ( !rc )
+            {
+                read_record_destroy(&rrctx);
+                read_record_init(&rrctx, ctx);
+
+                rc = handle_postcopy_page_data(ctx, &rec);
                 if ( rc )
-                {
-                    if ( (errno == EAGAIN) || (errno == EWOULDBLOCK) )
-                    {
-                        break;
-                    }
-
                     goto err;
-                }
-                else
-                {
-                    read_record_destroy(&rrctx);
-                    read_record_init(&rrctx, ctx);
 
-                    rc = handle_postcopy_page_data(ctx, &rec);
-                    if ( rc )
-                        goto err;
-
-                    free(rec.data);
-                    rec.data = NULL;
-                }
+                free(rec.data);
+                rec.data = NULL;
             }
         }
 
         if ( rc && pfds[0].revents & POLLIN )
         {
+            IPRINTF("evtchn readable!");
+
             port = xenevtchn_pending(paging->xce_handle);
             if ( port == -1 )
             {
@@ -1246,6 +1243,13 @@ static int postcopy_restore(struct xc_sr_context *ctx)
                 goto err;
         }
     }
+
+    /* At this point, all oustanding postcopy pages have been loaded.  We now
+     * need only flush any outstanding requests that may have accumulated in the
+     * ring while we were processing the final POSTCOPY_PAGE_DATA records. */
+    rc = handle_postcopy_paging_requests(ctx);
+    if ( rc )
+        goto err;
 
     rc = write_postcopy_complete_record(ctx);
     if ( rc )
