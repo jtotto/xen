@@ -1470,7 +1470,10 @@ int p2m_mem_paging_prep(struct domain *d, unsigned long gfn, uint64_t buffer)
         /* Sanity check the buffer and bail out early if trouble */
         if ( (buffer & (PAGE_SIZE - 1)) || 
              (!access_ok(user_ptr, PAGE_SIZE)) )
-            return -EINVAL;
+        {
+            gdprintk(XENLOG_ERR, "Bad buffer for prep page %lx domain %u\n",
+                                 gfn, d->domain_id);
+        }
 
     gfn_lock(p2m, gfn, 0);
 
@@ -1479,7 +1482,11 @@ int p2m_mem_paging_prep(struct domain *d, unsigned long gfn, uint64_t buffer)
     ret = -ENOENT;
     /* Allow missing pages */
     if ( (p2mt != p2m_ram_paging_in) && (p2mt != p2m_ram_paged) )
+    {
+        gdprintk(XENLOG_ERR, "Attempt to prep page %lx domain %u that isn't paged :( "
+                             "type %d\n", gfn, d->domain_id, p2mt);
         goto out;
+    }
 
     /* Allocate a page if the gfn does not have one yet */
     if ( !mfn_valid(mfn) )
@@ -1487,7 +1494,10 @@ int p2m_mem_paging_prep(struct domain *d, unsigned long gfn, uint64_t buffer)
         /* If the user did not provide a buffer, we disallow */
         ret = -EINVAL;
         if ( unlikely(user_ptr == NULL) )
+        {
+            gdprintk(XENLOG_ERR, "u wat %lx\n", gfn);
             goto out;
+        }
         /* Get a free page */
         ret = -ENOMEM;
         page = alloc_domheap_page(p2m->domain, 0);

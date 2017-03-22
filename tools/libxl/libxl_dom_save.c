@@ -442,7 +442,7 @@ void libxl__domain_save(libxl__egc *egc, libxl__domain_save_state *dss)
 
     if (dss->checkpointed_stream == LIBXL_CHECKPOINTED_STREAM_NONE) {
         callbacks->suspend = libxl__domain_suspend_callback;
-        callbacks->save_postcopy_transition = libxl__domain_suspend_postcopy_transition_callback;
+        callbacks->postcopy_transition = libxl__domain_suspend_postcopy_transition_callback;
 
         if (live) {
             switch (dss->precopy_period) {

@@ -101,6 +101,7 @@ static const char migrate_permission_to_go[]=
     "domain is yours, you are cleared to unpause";
 static const char migrate_report[]=
     "my copy unpause results are as follows";
+static const char YOLO[] = "#420blazeit";
 #endif
 
   /* followed by one byte:
@@ -4749,6 +4750,11 @@ static void migrate_domain(uint32_t domid, const char *rune, int debug,
     /* No need for additional ceremony if we already resumed the guest as part
      * of a postcopy live migration. */
     if (postcopy_transitioned) {
+        rc = migrate_read_fixedmessage(recv_fd, YOLO,
+                                       sizeof(YOLO),
+                                       "YOLO", rune);
+        assert(!rc);
+        libxl_domain_destroy(ctx, domid, 0);
         fprintf(stderr, "Migration successful.\n");
         exit(EXIT_SUCCESS);
     }
@@ -4853,6 +4859,11 @@ static void migrate_domain(uint32_t domid, const char *rune, int debug,
     exit(EXIT_FAILURE);
 
  failed_postcopy:
+    if (common_domname) {
+        xasprintf(&away_domname, "%s--postcopy-inconsistent", common_domname);
+        libxl_domain_rename(ctx, domid, common_domname, away_domname);
+    }
+
     fprintf(stderr,
  "** Migration failed during memory postcopy **\n"
  "It's possible that the guest has executed/is executing at the destination,\n"
@@ -4958,7 +4969,13 @@ static void migrate_receive(int debug, int daemonize, int monitor,
     /* No need for additional ceremony if we already resumed the guest as part
      * of a postcopy live migration. */
     if (postcopy_resumed) {
+        rc = libxl_write_exactly(ctx, send_fd,
+                                 YOLO,
+                                 sizeof(YOLO),
+                                 "migration ack stream", "ready message");
+        assert(!rc);
         fprintf(stderr, "migration target: Domain started successsfully.\n");
+        libxl_domain_rename(ctx, domid, migration_domname, common_domname);
         exit(EXIT_SUCCESS);
     }
 
@@ -5191,10 +5208,11 @@ int main_migrate(int argc, char **argv)
     static struct option opts[] = {
         {"debug", 0, 0, 0x100},
         {"live", 0, 0, 0x200},
+        {"postcopy", 1, 0, 't'},
         COMMON_LONG_OPTS
     };
 
-    SWITCH_FOREACH_OPT(opt, "FC:s:ep", opts, "migrate", 2) {
+    SWITCH_FOREACH_OPT(opt, "FC:s:ept:", opts, "migrate", 2) {
     case 'C':
         config_filename = optarg;
         break;

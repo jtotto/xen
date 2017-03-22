@@ -277,6 +277,12 @@ void vm_event_put_request(struct domain *d,
 #endif
     }
 
+    if ( req->reason == VM_EVENT_REASON_MEM_PAGING )
+    {
+        gdprintk(XENLOG_G_WARNING, "d%dv%d paging! flags %u gfn %"PRIu64"\n",
+                 d->domain_id, req->vcpu_id, req->flags, req->u.mem_paging.gfn);
+    }
+
     req->version = VM_EVENT_INTERFACE_VERSION;
 
     vm_event_ring_lock(ved);
@@ -357,6 +363,8 @@ void vm_event_resume(struct domain *d, struct vm_event_domain *ved)
 {
     vm_event_response_t rsp;
 
+    printk(XENLOG_WARNING "vm_event_resume! oh boy\n");
+
     /* Pull all responses off the ring. */
     while ( vm_event_get_response(d, ved, &rsp) )
     {
@@ -366,6 +374,12 @@ void vm_event_resume(struct domain *d, struct vm_event_domain *ved)
         {
             printk(XENLOG_G_WARNING "vm_event interface version mismatch\n");
             continue;
+        }
+
+        if ( rsp.reason == VM_EVENT_REASON_MEM_PAGING )
+        {
+            printk(XENLOG_WARNING "d%dv%d paging resume! flags %u gfn %"PRIu64"\n",
+                   d->domain_id, rsp.vcpu_id, rsp.flags, rsp.u.mem_paging.gfn);
         }
 
         /* Validate the vcpu_id in the response. */
@@ -391,7 +405,11 @@ void vm_event_resume(struct domain *d, struct vm_event_domain *ved)
         {
 #ifdef CONFIG_HAS_MEM_PAGING
             if ( rsp.reason == VM_EVENT_REASON_MEM_PAGING )
+            {
+                gdprintk(XENLOG_G_WARNING, "d%dv%d paging unpause!\n",
+                         d->domain_id, rsp.vcpu_id);
                 p2m_mem_paging_resume(d, &rsp);
+            }
 #endif
 
             /*
@@ -507,6 +525,7 @@ int __vm_event_claim_slot(struct domain *d, struct vm_event_domain *ved,
 /* Registered with Xen-bound event channel for incoming notifications. */
 static void mem_paging_notification(struct vcpu *v, unsigned int port)
 {
+    printk(XENLOG_WARNING "mem paging notification\n");
     if ( likely(v->domain->vm_event->paging.ring_page != NULL) )
         vm_event_resume(v->domain, &v->domain->vm_event->paging);
 }

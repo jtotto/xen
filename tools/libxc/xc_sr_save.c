@@ -110,11 +110,16 @@ static int get_batch_info(struct xc_sr_context *ctx,
         types[i] = mfns[i] = ctx->save.ops.pfn_to_gfn(ctx,
                                                       ctx->save.batch_pfns[i]);
 
-    rc = xc_get_pfn_type_batch(xch, ctx->domid, nr_pfns, types);
-    if ( rc )
+    /* The type query domctl accepts batches of at most 1024 pfns, so we need to
+     * break our batch here into appropriately-sized sub-batches. */
+    for ( i = 0; i < nr_pfns; i += 1024 )
     {
-        PERROR("Failed to get types for pfn batch");
-        goto err;
+        rc = xc_get_pfn_type_batch(xch, ctx->domid, min(1024U, nr_pfns - i), &types[i]);
+        if ( rc )
+        {
+            PERROR("Failed to get types for pfn batch");
+            goto err;
+        }
     }
 
     goto done;
@@ -452,6 +457,9 @@ static int send_postcopy_pfns(struct xc_sr_context *ctx)
     DECLARE_HYPERCALL_BUFFER_SHADOW(unsigned long, dirty_bitmap,
                                     &ctx->save.dirty_bitmap_hbuf);
 
+    /* The true nr_final_dirty_pages is iteratively computed by
+     * flush_postcopy_pfns_batch(), which counts only pages actually backed by
+     * data we need to migrate. */
     ctx->save.nr_final_dirty_pages = 0;
 
     rc = write_postcopy_pfns_begin_record(ctx);
@@ -542,7 +550,7 @@ static int do_send_dirty_pages(struct xc_sr_context *ctx,
 
     assert(batch_empty(ctx));
     ctx->save.batch_type = XC_SR_SAVE_BATCH_PRECOPY_PAGE;
-    for ( p = 0; p < ctx->save.p2m_size; )
+    for ( p = 0, written = 0; p < ctx->save.p2m_size; )
     {
         if ( ctx->save.live && precopy && should_begin_postcopy(cbdata) )
         {
@@ -571,7 +579,7 @@ static int do_send_dirty_pages(struct xc_sr_context *ctx,
             return rc;
 
         /* Update progress every after every batch (4MB) of memory sent. */
-        xc_report_progress_step(xch, written, entries);
+        //xc_report_progress_step(xch, written, entries);
     }
 
     if ( written > entries )
@@ -686,7 +694,7 @@ static int precopy_memory_live(struct xc_sr_context *ctx)
         goto out;
 
     rc = precopy_all_pages(ctx);
-    if ( rc )
+    if ( rc || ctx->save.postcopy_requested )
         goto out;
 
     for ( x = 1;
@@ -711,7 +719,7 @@ static int precopy_memory_live(struct xc_sr_context *ctx)
             goto out;
 
         rc = precopy_dirty_pages(ctx, stats.dirty_count);
-        if ( rc )
+        if ( rc || ctx->save.postcopy_requested )
             goto out;
     }
 
@@ -782,7 +790,6 @@ static int suspend_and_check_dirty(struct xc_sr_context *ctx)
 {
     xc_interface *xch = ctx->xch;
     xc_shadow_op_stats_t stats = { 0, ctx->save.p2m_size };
-    char *progress_str = NULL;
     int rc;
     DECLARE_HYPERCALL_BUFFER_SHADOW(unsigned long, dirty_bitmap,
                                     &ctx->save.dirty_bitmap_hbuf);
@@ -801,16 +808,6 @@ static int suspend_and_check_dirty(struct xc_sr_context *ctx)
         rc = -1;
         goto out;
     }
-
-    if ( ctx->save.live )
-    {
-        rc = update_progress_string(ctx, &progress_str,
-                                    ctx->save.max_iterations);
-        if ( rc )
-            goto out;
-    }
-    else
-        xc_set_progress_prefix(xch, "Checkpointed save");
 
     bitmap_or(dirty_bitmap, ctx->save.deferred_pages, ctx->save.p2m_size);
 
@@ -834,8 +831,6 @@ static int suspend_and_check_dirty(struct xc_sr_context *ctx)
     ctx->save.nr_deferred_pages = 0;
 
  out:
-    xc_set_progress_prefix(xch, NULL);
-    free(progress_str);
     return rc;
 }
 
@@ -934,16 +929,14 @@ static int handle_postcopy_faults(struct xc_sr_context *ctx,
     DECLARE_HYPERCALL_BUFFER_SHADOW(unsigned long, dirty_bitmap,
                                     &ctx->save.dirty_bitmap_hbuf);
 
-    if ( rec->type != REC_TYPE_POSTCOPY_FAULT )
-    {
-        ERROR("Expected a POSTCOPY_FAULT record, received %s instead",
-              rec_type_to_str(rec->type));
-        return -1;
-    }
+    assert(nr_new_fault_pfns);
+    *nr_new_fault_pfns = 0;
 
-    rc = validate_pages_record(ctx, rec);
+    rc = validate_pages_record(ctx, rec, REC_TYPE_POSTCOPY_FAULT);
     if ( rc )
         return rc;
+
+    IPRINTF("Handling a batch of %"PRIu32" faults!", fault_pages->count);
 
     assert(ctx->save.batch_type == XC_SR_SAVE_BATCH_POSTCOPY_PAGE);
     for ( i = 0; i < fault_pages->count; ++i )
@@ -1252,7 +1245,8 @@ static int save(struct xc_sr_context *ctx, uint16_t guest_type)
                 goto err;
 
             /* ... and yield control to libxl to finish the transition. */
-            rc = ctx->save.callbacks->save_postcopy_transition(
+            IPRINTF("Signalling postcopy transition");
+            rc = ctx->save.callbacks->postcopy_transition(
                 ctx->save.callbacks->data);
             if ( !rc )
             {

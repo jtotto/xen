@@ -58,7 +58,7 @@ struct save_callbacks {
             int (*should_begin_postcopy)(void *data);
 
             /* XXX */
-            int (*save_postcopy_transition)(void *data);
+            int (*postcopy_transition)(void *data);
         };
 
         struct {
@@ -133,7 +133,7 @@ struct restore_callbacks {
     union {
         struct {
             /* XXX */
-            void (*restore_postcopy_transition)(void *data);
+            int (*postcopy_transition)(void *data);
         };
 
         struct {

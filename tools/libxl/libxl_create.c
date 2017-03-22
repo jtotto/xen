@@ -1135,7 +1135,7 @@ static void domcreate_bootloader_done(libxl__egc *egc,
             /* When the restore helper initiates the postcopy transition, pick
              * up in domcreate_postcopy_transition_callback() and immediately
              * hand control back to the stream reader. */
-            callbacks->restore_postcopy_transition =
+            callbacks->postcopy_transition =
                 domcreate_postcopy_transition_callback;
 
             /* When the stream reader is finished reading the postcopy
@@ -1191,12 +1191,15 @@ static void domcreate_postcopy_stream_done(libxl__egc *egc,
 {
     libxl__domain_create_state *dcs = srs->dcs;
 
+    EGC_GC;
+
     assert(!dcs->postcopy.stream_done);
 
     if (dcs->postcopy.resumed) {
         /* This is the expected case - resumption completed, and some time later
          * the final postcopy pages were migrated and the stream wrapped up.
          * We're now totally done! */
+        LOG(INFO, "Postcopy stream completed after domain unpaused!");
         dcs->callback(egc, dcs, ret, dcs->guest_domid);
     } else if (dcs->postcopy.rc) {
         /* The resumption failed. */
@@ -1214,6 +1217,7 @@ static void domcreate_postcopy_stream_done(libxl__egc *egc,
         dcs->postcopy.stream_done = true;
 
         /* Just let it finish.  Nothing to do for now. */
+        LOG(INFO, "Postcopy stream completed BEFORE domain unpaused!");
     }
 }
 
@@ -1708,6 +1712,7 @@ static void domcreate_report_result(libxl__egc *egc,
                 /* The stream finished successfully, so we can report our local
                  * result as the overall result. */
                 dcs->callback(egc, dcs, rc, dcs->guest_domid);
+                LOG(INFO, "Postcopy domain unpaused after stream completed");
             } else if (rc) {
                 /* The stream isn't done yet, but we failed.  Tell it to bail,
                  * and stash our return code for the postcopy stream completion
@@ -1717,12 +1722,14 @@ static void domcreate_report_result(libxl__egc *egc,
                 libxl__stream_read_abort(egc, &dcs->srs, -1);
             } else {
                 dcs->postcopy.resumed = true;
+                LOG(INFO, "Postcopy domain unpaused before stream completed");
             }
         }
     } else {
         /* If we aren't presently in the process of completing a postcopy
          * resumption (the norm), everything is all cleaned up and we can report
          * our result directly. */
+        LOG(INFO, "No postcopy at all...");
         dcs->callback(egc, dcs, rc, dcs->guest_domid);
     }
 }

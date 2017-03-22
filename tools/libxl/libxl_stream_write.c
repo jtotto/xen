@@ -95,7 +95,7 @@ static void emulator_context_read_done(libxl__egc *egc,
                                        int rc, int onwrite, int errnoval);
 static void emulator_context_record_done(libxl__egc *egc,
                                          libxl__stream_write_state *stream);
-static void write_state_end_record(libxl__egc *egc,
+static void write_phase_end_record(libxl__egc *egc,
                                    libxl__stream_write_state *stream);
 
 static void postcopy_transition_end_record_done(
@@ -395,7 +395,7 @@ void libxl__xc_domain_save_done(libxl__egc *egc, void *dss_void,
      * If the stream is not still alive, we must not continue any work.
      */
     if (libxl__stream_write_inuse(stream)) {
-        if (dss->checkpointed_stream != LIBXL_CHECKPOINTED_STREAM_NONE)
+        if (dss->checkpointed_stream != LIBXL_CHECKPOINTED_STREAM_NONE) {
             /*
              * For remus, if libxl__xc_domain_save_done() completes,
              * there was an error sending data to the secondary.
@@ -403,15 +403,17 @@ void libxl__xc_domain_save_done(libxl__egc *egc, void *dss_void,
              * return value (Please refer to libxl__remus_teardown())
              */
             stream_complete(egc, stream, 0);
-        else if (stream->postcopy_transition_completed)
+        } else if (stream->postcopy_transition_completed) {
             /*
              * If, on the other hand, this is a normal migration that had a
              * postcopy migration stage, we're completely done at this point and
              * want to report any error received here to our caller.
              */
-            stream_complete(egc, stream, rc);
-        else
+            assert(stream->phase == SWS_PHASE_NORMAL);
+            write_phase_end_record(egc, stream);
+        } else {
             write_emulator_xenstore_record(egc, stream);
+        }
     }
 }
 
@@ -462,7 +464,7 @@ static void emulator_xenstore_record_done(libxl__egc *egc,
     if (dss->type == LIBXL_DOMAIN_TYPE_HVM)
         write_emulator_context_record(egc, stream);
     else
-        write_state_end_record(egc, stream);
+        write_phase_end_record(egc, stream);
 }
 
 static void write_emulator_context_record(libxl__egc *egc,
@@ -560,10 +562,10 @@ static void emulator_context_record_done(libxl__egc *egc,
     free(stream->emu_body);
     stream->emu_body = NULL;
 
-    write_state_end_record(egc, stream);
+    write_phase_end_record(egc, stream);
 }
 
-static void write_state_end_record(libxl__egc *egc,
+static void write_phase_end_record(libxl__egc *egc,
                                    libxl__stream_write_state *stream)
 {
     struct libxl__sr_rec_hdr rec;

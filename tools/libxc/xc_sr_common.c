@@ -214,17 +214,17 @@ int try_read_record(struct xc_sr_read_record_context *rrctx, int fd,
     return 0;
 }
 
-int validate_pages_record(struct xc_sr_context *ctx, struct xc_sr_record *rec)
+int validate_pages_record(struct xc_sr_context *ctx, struct xc_sr_record *rec,
+                          uint32_t expected_type)
 {
     xc_interface *xch = ctx->xch;
     struct xc_sr_rec_pages_header *pages = rec->data;
 
-    if ( rec->type != REC_TYPE_PAGE_DATA &&
-         rec->type != REC_TYPE_POSTCOPY_PFNS &&
-         rec->type != REC_TYPE_POSTCOPY_FAULT )
+    if ( rec->type != expected_type )
     {
-        ERROR("Pages record type expected, instead received record of type "
-              "%08x (%s)", rec->type, rec_type_to_str(rec->type));
+        ERROR("%s record type expected, instead received record of type "
+              "%08x (%s)", rec_type_to_str(expected_type), rec->type,
+              rec_type_to_str(rec->type));
         return -1;
     }
     else if ( rec->length < sizeof(*pages) )

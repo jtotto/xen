@@ -465,7 +465,8 @@ static inline void read_record_destroy(struct xc_sr_read_record_context *rrctx)
     free(rrctx->data);
 }
 
-int validate_pages_record(struct xc_sr_context *ctx, struct xc_sr_record *rec);
+int validate_pages_record(struct xc_sr_context *ctx, struct xc_sr_record *rec,
+                          uint32_t expected_type);
 
 /*
  * This would ideally be private in restore.c, but is needed by
