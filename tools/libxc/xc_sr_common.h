@@ -392,6 +392,16 @@ static inline int write_record(struct xc_sr_context *ctx, int fd,
 int read_record(struct xc_sr_context *ctx, int fd, struct xc_sr_record *rec);
 
 /*
+ * Given a record of one of the page data types, validate it by:
+ * - checking its actual type against its specific expected type
+ * - sanity checking its actual length against its claimed length
+ *
+ * Returns 0 on success and non-0 on failure.
+ */
+int validate_pages_record(struct xc_sr_context *ctx, struct xc_sr_record *rec,
+                          uint32_t expected_type);
+
+/*
  * This would ideally be private in restore.c, but is needed by
  * x86_pv_localise_page() if we receive pagetables frames ahead of the
  * contents of the frames they point at.
