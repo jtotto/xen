@@ -53,7 +53,7 @@ static int write_end_record(struct xc_sr_context *ctx)
 {
     struct xc_sr_record end = { REC_TYPE_END, 0, NULL };
 
-    return write_record(ctx, &end);
+    return write_record(ctx, ctx->fd, &end);
 }
 
 /*
@@ -63,7 +63,7 @@ static int write_checkpoint_record(struct xc_sr_context *ctx)
 {
     struct xc_sr_record checkpoint = { REC_TYPE_CHECKPOINT, 0, NULL };
 
-    return write_record(ctx, &checkpoint);
+    return write_record(ctx, ctx->fd, &checkpoint);
 }
 
 /*
@@ -646,7 +646,7 @@ static int verify_frames(struct xc_sr_context *ctx)
 
     DPRINTF("Enabling verify mode");
 
-    rc = write_record(ctx, &rec);
+    rc = write_record(ctx, ctx->fd, &rec);
     if ( rc )
         goto out;
 
