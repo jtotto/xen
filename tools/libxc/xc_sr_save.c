@@ -64,9 +64,7 @@ static int write_headers(struct xc_sr_context *ctx, uint16_t guest_type)
 }
 
 /*
- * Macro that declares a helper function to write an empty record of a
- * particular type.  This is intended as a readability aid - write_foo_record()
- * is a little easier on the eyes than write_trivial_record(REC_TYPE_FOO).
+ * Declares a helper function to write an empty record of a particular type.
  */
 #define WRITE_TRIVIAL_RECORD_FN(name, type)                         \
     static int write_ ## name ## _record(struct xc_sr_context *ctx) \
@@ -977,6 +975,7 @@ static int postcopy_domain_memory(struct xc_sr_context *ctx)
     unsigned long nr_new_fault_pfns;
     unsigned long pages_remaining = ctx->save.nr_final_dirty_pages;
     xen_pfn_t last_fault_pfn, p;
+    bool received_postcopy_complete = false;
 
     DECLARE_HYPERCALL_BUFFER_SHADOW(unsigned long, dirty_bitmap,
                                     &ctx->save.dirty_bitmap_hbuf);
@@ -1027,6 +1026,16 @@ static int postcopy_domain_memory(struct xc_sr_context *ctx)
                 read_record_destroy(&rrctx);
                 read_record_init(&rrctx, ctx);
 
+                if ( rec.type == REC_TYPE_POSTCOPY_COMPLETE )
+                {
+                    /* The restore side may ultimately not need all of the pages
+                     * we think it does - for example, the guest may release
+                     * some outstanding pages.  If this occurs, we'll receive
+                     * this record before we'd otherwise expect to. */
+                    received_postcopy_complete = true;
+                    goto done;
+                }
+
                 rc = handle_postcopy_faults(ctx, &rec, &nr_new_fault_pfns,
                                             &last_fault_pfn);
                 if ( rc )
@@ -1063,18 +1072,22 @@ static int postcopy_domain_memory(struct xc_sr_context *ctx)
             goto err;
     }
 
+ done:
     /* Revert the receive stream to the (blocking) state we found it in. */
     rc = fcntl(recv_fd, F_SETFL, old_flags);
     if ( rc == -1 )
         goto err;
 
-    /* Flush any outstanding POSTCOPY_FAULT requests from the migration
-     * stream by reading until a POSTCOPY_COMPLETE is received. */
-    do {
-        rc = read_record(ctx, recv_fd, &rec);
-        if ( rc )
-            goto err;
-    } while ( rec.type != REC_TYPE_POSTCOPY_COMPLETE );
+    if ( !received_postcopy_complete )
+    {
+        /* Flush any outstanding POSTCOPY_FAULT requests from the migration
+         * stream by reading until a POSTCOPY_COMPLETE is received. */
+        do {
+            rc = read_record(ctx, recv_fd, &rec);
+            if ( rc )
+                goto err;
+        } while ( rec.type != REC_TYPE_POSTCOPY_COMPLETE );
+    }
 
  err:
     free(rec.data);

@@ -489,6 +489,13 @@ static struct xc_sr_pending_postcopy_request outstanding_sentinel;
  * can be satisfied immediately. */
 static struct xc_sr_pending_postcopy_request ready_sentinel;
 
+/* The address of this structure is used as a sentinel entry in
+ * paging->pending_pfns to indicate that the page was previously outstanding but
+ * was dropped by the guest.  We're interested in explicitly keeping track of
+ * this case so that we don't panic upon receiving data for such pages from the
+ * sender even when we wouldn't need to. */
+static struct xc_sr_pending_postcopy_request dropped_sentinel;
+
 /* An empty list is used in paging->pending_pfns to indicate that the given pfn
  * never at any point needed to be postcopy-migrated. */
 
@@ -503,6 +510,11 @@ static inline bool ppfn_ready(struct xc_sr_pending_postcopy_requests *ppfn)
     return LIBXC_SLIST_FIRST(ppfn) == &ready_sentinel;
 }
 
+static inline bool ppfn_dropped(struct xc_sr_pending_postcopy_requests *ppfn)
+{
+    return LIBXC_SLIST_FIRST(ppfn) == &dropped_sentinel;
+}
+
 static inline bool ppfn_invalid(struct xc_sr_pending_postcopy_requests *ppfn)
 {
     return LIBXC_SLIST_EMPTY(ppfn);
@@ -512,7 +524,8 @@ static inline bool ppfn_requested(struct xc_sr_pending_postcopy_requests *ppfn)
 {
     return !ppfn_invalid(ppfn) &&
            !ppfn_outstanding(ppfn) &&
-           !ppfn_ready(ppfn);
+           !ppfn_ready(ppfn) &&
+           !ppfn_dropped(ppfn);
 }
 
 static void mark_ppfn_outstanding(struct xc_sr_pending_postcopy_requests *ppfn)
@@ -526,6 +539,12 @@ static void mark_ppfn_ready(struct xc_sr_pending_postcopy_requests *ppfn)
 {
     LIBXC_SLIST_INIT(ppfn);
     LIBXC_SLIST_INSERT_HEAD(ppfn, &ready_sentinel, link);
+}
+
+static void mark_ppfn_dropped(struct xc_sr_pending_postcopy_requests *ppfn)
+{
+    LIBXC_SLIST_INIT(ppfn);
+    LIBXC_SLIST_INSERT_HEAD(ppfn, &dropped_sentinel, link);
 }
 
 /* XXX postcopy begins */
@@ -875,16 +894,13 @@ static int postcopy_load_page(struct xc_sr_context *ctx, xen_pfn_t pfn,
             LIBXC_SLIST_REMOVE_HEAD(ppfn, link);
 
             /* Put the response on the ring. */
-            rsp = (vm_event_response_t) {
+            rsp = (vm_event_response_t)
+            {
                 .version = VM_EVENT_INTERFACE_VERSION,
                 .vcpu_id = request->vcpu_id,
                 .flags   = (request->flags & VM_EVENT_FLAG_VCPU_PAUSED),
                 .reason  = VM_EVENT_REASON_MEM_PAGING,
-                .u = {
-                    .mem_paging = {
-                        .gfn = pfn
-                    }
-                }
+                .u       = { .mem_paging = { .gfn = pfn } }
             };
 
             memcpy(RING_GET_RESPONSE(back_ring, back_ring->rsp_prod_pvt),
@@ -934,12 +950,15 @@ static int process_postcopy_page_data(struct xc_sr_context *ctx, unsigned count,
                 ERROR("pfn %"PRI_xen_pfn" already received", pfns[i]);
                 return -1;
             }
+            else if ( ppfn_dropped(ppfn) )
+            {
+                /* Nothing to do - move on to the next page. */
+                page_data += PAGE_SIZE;
+            }
             else
             {
                 if ( ppfn_requested(ppfn) )
-                {
-                    IPRINTF("Received requested pfn %"PRI_xen_pfn, pfns[i]);
-                }
+                    DBGPRINTF("Received requested pfn %"PRI_xen_pfn, pfns[i]);
 
                 push_responses = (push_responses || ppfn_requested(ppfn));
 
@@ -960,7 +979,6 @@ static int process_postcopy_page_data(struct xc_sr_context *ctx, unsigned count,
          * channel. */
         RING_PUSH_RESPONSES(&paging->back_ring);
 
-        IPRINTF("xenevtchn_notify");
         rc = xenevtchn_notify(paging->xce_handle, paging->port);
         if ( rc )
         {
@@ -1041,41 +1059,53 @@ static int handle_postcopy_paging_requests(struct xc_sr_context *ctx)
     vm_event_request_t req;
     vm_event_response_t rsp;
     xen_pfn_t pfn;
-    bool put_responses = false;
+    bool put_responses = false, drop_requested = false;
     unsigned nr_batch_requests = 0;
-
-    IPRINTF("Handling postcopy paging requests");
 
     while ( RING_HAS_UNCONSUMED_REQUESTS(back_ring) )
     {
         RING_COPY_REQUEST(back_ring, back_ring->req_cons, &req);
         ++back_ring->req_cons;
 
+        drop_requested = !!(req.u.mem_paging.flags & MEM_PAGING_DROP_PAGE);
         pfn = req.u.mem_paging.gfn;
         ppfn = &paging->pending_pfns[pfn];
 
-        IPRINTF("Postcopy page fault! %"PRI_xen_pfn, pfn);
+        DBGPRINTF("Postcopy page fault! %"PRI_xen_pfn, pfn);
 
         if ( ppfn_invalid(ppfn) )
         {
-            ERROR("PFN does not need to be migrated %"PRI_xen_pfn, pfn);
+            ERROR("pfn %"PRI_xen_pfn" does not need to be migrated", pfn);
             rc = -1;
             goto err;
         }
-        else if ( ppfn_ready(ppfn) )
+        else if ( ppfn_ready(ppfn) || drop_requested )
         {
-            /* This page has already been loaded, so we can unpause the faulting
-             * vcpu immediately. */
-            rsp = (vm_event_response_t) {
+            if ( drop_requested )
+            {
+                if ( ppfn_outstanding(ppfn) )
+                {
+                    mark_ppfn_dropped(ppfn);
+                    --paging->nr_pending_pfns;
+                }
+                else
+                {
+                    ERROR("Pager requesting we drop non-paged "
+                          "(or previously-requested) pfn %"PRI_xen_pfn, pfn);
+                    rc = -1;
+                    goto err;
+                }
+            }
+
+            /* This page has already been loaded (or has been dropped), so we can
+             * respond immediately. */
+            rsp = (vm_event_response_t)
+            {
                 .version = VM_EVENT_INTERFACE_VERSION,
                 .vcpu_id = req.vcpu_id,
                 .flags   = (req.flags & VM_EVENT_FLAG_VCPU_PAUSED),
                 .reason  = VM_EVENT_REASON_MEM_PAGING,
-                .u = {
-                    .mem_paging = {
-                        .gfn = pfn
-                    }
-                }
+                .u       = { .mem_paging = { .gfn = pfn } }
             };
 
             memcpy(RING_GET_RESPONSE(back_ring, back_ring->rsp_prod_pvt),
@@ -1108,13 +1138,10 @@ static int handle_postcopy_paging_requests(struct xc_sr_context *ctx)
         }
     }
 
-    IPRINTF("Handled postcopy paging requests");
-
     if ( put_responses )
     {
         RING_PUSH_RESPONSES(back_ring);
 
-        IPRINTF("xenevtchn_notify");
         rc = xenevtchn_notify(paging->xce_handle, paging->port);
         if ( rc )
         {
@@ -1221,8 +1248,6 @@ static int postcopy_restore(struct xc_sr_context *ctx)
 
         if ( rc && pfds[0].revents & POLLIN )
         {
-            IPRINTF("evtchn readable!");
-
             port = xenevtchn_pending(paging->xce_handle);
             if ( port == -1 )
             {
