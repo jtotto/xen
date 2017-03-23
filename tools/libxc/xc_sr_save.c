@@ -47,24 +47,18 @@ static int write_headers(struct xc_sr_context *ctx, uint16_t guest_type)
 }
 
 /*
- * Writes an END record into the stream.
+ * Declares a helper function to write an empty record of a particular type.
  */
-static int write_end_record(struct xc_sr_context *ctx)
-{
-    struct xc_sr_record end = { REC_TYPE_END, 0, NULL };
+#define WRITE_TRIVIAL_RECORD_FN(name, type)                         \
+    static int write_ ## name ## _record(struct xc_sr_context *ctx) \
+    {                                                               \
+        struct xc_sr_record name = { (type), 0, NULL };             \
+                                                                    \
+        return write_record(ctx, ctx->fd, &name);                   \
+    }
 
-    return write_record(ctx, ctx->fd, &end);
-}
-
-/*
- * Writes a CHECKPOINT record into the stream.
- */
-static int write_checkpoint_record(struct xc_sr_context *ctx)
-{
-    struct xc_sr_record checkpoint = { REC_TYPE_CHECKPOINT, 0, NULL };
-
-    return write_record(ctx, ctx->fd, &checkpoint);
-}
+WRITE_TRIVIAL_RECORD_FN(end,                 REC_TYPE_END);
+WRITE_TRIVIAL_RECORD_FN(checkpoint,          REC_TYPE_CHECKPOINT);
 
 /*
  * Writes a batch of memory as a PAGE_DATA record into the stream.  The batch
