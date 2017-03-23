@@ -203,6 +203,9 @@ struct xc_sr_context
             struct precopy_stats stats;
             int policy_decision;
 
+            enum {
+                XC_SR_SAVE_BATCH_PRECOPY_PAGE
+            } batch_type;
             xen_pfn_t *batch_pfns;
             unsigned nr_batch_pfns;
             unsigned long *deferred_pages;
