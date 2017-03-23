@@ -376,39 +376,25 @@ static int process_page_data(struct xc_sr_context *ctx, unsigned count,
 }
 
 /*
- * Validate a PAGE_DATA record from the stream, and pass the results to
- * process_page_data() to actually perform the legwork.
+ * Given a PAGE_DATA record, decode each packed entry into its encoded pfn and
+ * type, storing the results in newly-allocated pfns and types buffers that the
+ * caller must later free().  *pfns and *types may safely be free()ed even after
+ * failure.
  */
-static int handle_page_data(struct xc_sr_context *ctx, struct xc_sr_record *rec)
+static int decode_pages_record(struct xc_sr_context *ctx,
+                               struct xc_sr_rec_pages_header *pages,
+                               /* OUT */ xen_pfn_t **pfns,
+                               /* OUT */ uint32_t **types,
+                               /* OUT */ unsigned *pages_of_data)
 {
     xc_interface *xch = ctx->xch;
-    struct xc_sr_rec_page_data_header *pages = rec->data;
-    unsigned i, pages_of_data = 0;
-    int rc = -1;
+    unsigned i;
+    xen_pfn_t pfn;
+    uint32_t type;
 
-    xen_pfn_t *pfns = NULL, pfn;
-    uint32_t *types = NULL, type;
-
-    if ( rec->length < sizeof(*pages) )
-    {
-        ERROR("PAGE_DATA record truncated: length %u, min %zu",
-              rec->length, sizeof(*pages));
-        goto err;
-    }
-    else if ( pages->count < 1 )
-    {
-        ERROR("Expected at least 1 pfn in PAGE_DATA record");
-        goto err;
-    }
-    else if ( rec->length < sizeof(*pages) + (pages->count * sizeof(uint64_t)) )
-    {
-        ERROR("PAGE_DATA record (length %u) too short to contain %u"
-              " pfns worth of information", rec->length, pages->count);
-        goto err;
-    }
-
-    pfns = malloc(pages->count * sizeof(*pfns));
-    types = malloc(pages->count * sizeof(*types));
+    *pfns = malloc(pages->count * sizeof(*pfns));
+    *types = malloc(pages->count * sizeof(*types));
+    *pages_of_data = 0;
     if ( !pfns || !types )
     {
         ERROR("Unable to allocate enough memory for %u pfns",
@@ -418,14 +404,14 @@ static int handle_page_data(struct xc_sr_context *ctx, struct xc_sr_record *rec)
 
     for ( i = 0; i < pages->count; ++i )
     {
-        pfn = pages->pfn[i] & PAGE_DATA_PFN_MASK;
+        pfn = pages->pfn[i] & REC_PFINFO_PFN_MASK;
         if ( !ctx->restore.ops.pfn_is_valid(ctx, pfn) )
         {
             ERROR("pfn %#"PRIpfn" (index %u) outside domain maximum", pfn, i);
             goto err;
         }
 
-        type = (pages->pfn[i] & PAGE_DATA_TYPE_MASK) >> 32;
+        type = (pages->pfn[i] & REC_PFINFO_TYPE_MASK) >> 32;
         if ( ((type >> XEN_DOMCTL_PFINFO_LTAB_SHIFT) >= 5) &&
              ((type >> XEN_DOMCTL_PFINFO_LTAB_SHIFT) <= 8) )
         {
@@ -434,13 +420,49 @@ static int handle_page_data(struct xc_sr_context *ctx, struct xc_sr_record *rec)
             goto err;
         }
         else if ( type < XEN_DOMCTL_PFINFO_BROKEN )
-            /* NOTAB and all L1 through L4 tables (including pinned) should
-             * have a page worth of data in the record. */
-            pages_of_data++;
+            /* NOTAB and all L1 through L4 tables (including pinned) require the
+             * migration of a page of real data. */
+            (*pages_of_data)++;
 
-        pfns[i] = pfn;
-        types[i] = type;
+        (*pfns)[i] = pfn;
+        (*types)[i] = type;
     }
+
+    return 0;
+
+ err:
+    free(*pfns);
+    *pfns = NULL;
+
+    free(*types);
+    *types = NULL;
+
+    *pages_of_data = 0;
+
+    return -1;
+}
+
+/*
+ * Validate a PAGE_DATA record from the stream, and pass the results to
+ * process_page_data() to actually perform the legwork.
+ */
+static int handle_page_data(struct xc_sr_context *ctx, struct xc_sr_record *rec)
+{
+    xc_interface *xch = ctx->xch;
+    struct xc_sr_rec_pages_header *pages = rec->data;
+    unsigned pages_of_data;
+    int rc = -1;
+
+    xen_pfn_t *pfns = NULL;
+    uint32_t *types = NULL;
+
+    rc = validate_pages_record(ctx, rec, REC_TYPE_PAGE_DATA);
+    if ( rc )
+        goto err;
+
+    rc = decode_pages_record(ctx, pages, &pfns, &types, &pages_of_data);
+    if ( rc )
+        goto err;
 
     if ( rec->length != (sizeof(*pages) +
                          (sizeof(uint64_t) * pages->count) +
