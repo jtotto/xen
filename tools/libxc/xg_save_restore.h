@@ -24,7 +24,7 @@
 ** We process save/restore/migrate in batches of pages; the below
 ** determines how many pages we (at maximum) deal with in each batch.
 */
-#define MAX_BATCH_SIZE 1024   /* up to 1024 pages (4MB) at a time */
+#define MAX_PRECOPY_BATCH_SIZE 1024   /* up to 1024 pages (4MB) at a time */
 
 /* When pinning page tables at the end of restore, we also use batching. */
 #define MAX_PIN_BATCH  1024

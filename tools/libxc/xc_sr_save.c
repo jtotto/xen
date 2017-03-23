@@ -3,6 +3,23 @@
 
 #include "xc_sr_common.h"
 
+#define MAX_BATCH_SIZE MAX_PRECOPY_BATCH_SIZE
+
+static const unsigned int batch_sizes[] =
+{
+    [XC_SR_SAVE_BATCH_PRECOPY_PAGE]  = MAX_PRECOPY_BATCH_SIZE
+};
+
+static const bool batch_includes_contents[] =
+{
+    [XC_SR_SAVE_BATCH_PRECOPY_PAGE] = true
+};
+
+static const uint32_t batch_rec_types[] =
+{
+    [XC_SR_SAVE_BATCH_PRECOPY_PAGE]  = REC_TYPE_PAGE_DATA
+};
+
 /*
  * Writes an Image header and Domain header into the stream.
  */
@@ -67,19 +84,54 @@ static int write_checkpoint_record(struct xc_sr_context *ctx)
 }
 
 /*
+ * This function:
+ * - maps each pfn in the current batch to its gfn
+ * - gets the type of each pfn in the batch.
+ */
+static int get_batch_info(struct xc_sr_context *ctx, xen_pfn_t *gfns,
+                          xen_pfn_t *types)
+{
+    int rc;
+    unsigned int nr_pfns = ctx->save.nr_batch_pfns;
+    xc_interface *xch = ctx->xch;
+    unsigned int i;
+
+    for ( i = 0; i < nr_pfns; ++i )
+        types[i] = gfns[i] = ctx->save.ops.pfn_to_gfn(ctx,
+                                                      ctx->save.batch_pfns[i]);
+
+    /*
+     * The type query domctl accepts batches of at most 1024 pfns, so we need to
+     * break our batch here into appropriately-sized sub-batches.
+     */
+    for ( i = 0; i < nr_pfns; i += 1024 )
+    {
+        rc = xc_get_pfn_type_batch(xch, ctx->domid, min(1024U, nr_pfns - i),
+                                   &types[i]);
+        if ( rc )
+        {
+            PERROR("Failed to get types for pfn batch");
+            return rc;
+        }
+    }
+
+    return 0;
+}
+
+/*
  * Writes a batch of memory as a PAGE_DATA record into the stream.  The batch
  * is constructed in ctx->save.batch_pfns.
  *
  * This function:
- * - gets the types for each pfn in the batch.
  * - for each pfn with real data:
  *   - maps and attempts to localise the pages.
  * - construct and writes a PAGE_DATA record into the stream.
  */
-static int write_batch(struct xc_sr_context *ctx)
+static int write_batch(struct xc_sr_context *ctx, xen_pfn_t *gfns,
+                       xen_pfn_t *types)
 {
     xc_interface *xch = ctx->xch;
-    xen_pfn_t *gfns = NULL, *types = NULL;
+    xen_pfn_t *bgfns = NULL;
     void *guest_mapping = NULL;
     void **guest_data = NULL;
     void **local_pages = NULL;
@@ -90,17 +142,16 @@ static int write_batch(struct xc_sr_context *ctx)
     uint64_t *rec_pfns = NULL;
     struct iovec *iov = NULL; int iovcnt = 0;
     struct xc_sr_rec_pages_header hdr = { 0 };
+    bool send_page_contents = batch_includes_contents[ctx->save.batch_type];
     struct xc_sr_record rec =
     {
-        .type = REC_TYPE_PAGE_DATA,
+        .type = batch_rec_types[ctx->save.batch_type],
     };
 
     assert(nr_pfns != 0);
 
-    /* Mfns of the batch pfns. */
-    gfns = malloc(nr_pfns * sizeof(*gfns));
-    /* Types of the batch pfns. */
-    types = malloc(nr_pfns * sizeof(*types));
+    /* The subset of gfns that are physically-backed. */
+    bgfns = malloc(nr_pfns * sizeof(*bgfns));
     /* Errors from attempting to map the gfns. */
     errors = malloc(nr_pfns * sizeof(*errors));
     /* Pointers to page data to send.  Mapped gfns or local allocations. */
@@ -110,19 +161,16 @@ static int write_batch(struct xc_sr_context *ctx)
     /* iovec[] for writev(). */
     iov = malloc((nr_pfns + 4) * sizeof(*iov));
 
-    if ( !gfns || !types || !errors || !guest_data || !local_pages || !iov )
+    if ( !bgfns || !errors || !guest_data || !local_pages || !iov )
     {
         ERROR("Unable to allocate arrays for a batch of %u pages",
               nr_pfns);
         goto err;
     }
 
+    /* Mark likely-ballooned pages as deferred. */
     for ( i = 0; i < nr_pfns; ++i )
     {
-        types[i] = gfns[i] = ctx->save.ops.pfn_to_gfn(ctx,
-                                                      ctx->save.batch_pfns[i]);
-
-        /* Likely a ballooned page. */
         if ( gfns[i] == INVALID_MFN )
         {
             set_bit(ctx->save.batch_pfns[i], ctx->save.deferred_pages);
@@ -130,39 +178,9 @@ static int write_batch(struct xc_sr_context *ctx)
         }
     }
 
-    rc = xc_get_pfn_type_batch(xch, ctx->domid, nr_pfns, types);
-    if ( rc )
+    if ( send_page_contents )
     {
-        PERROR("Failed to get types for pfn batch");
-        goto err;
-    }
-    rc = -1;
-
-    for ( i = 0; i < nr_pfns; ++i )
-    {
-        switch ( types[i] )
-        {
-        case XEN_DOMCTL_PFINFO_BROKEN:
-        case XEN_DOMCTL_PFINFO_XALLOC:
-        case XEN_DOMCTL_PFINFO_XTAB:
-            continue;
-        }
-
-        gfns[nr_pages++] = gfns[i];
-    }
-
-    if ( nr_pages > 0 )
-    {
-        guest_mapping = xenforeignmemory_map(xch->fmem,
-            ctx->domid, PROT_READ, nr_pages, gfns, errors);
-        if ( !guest_mapping )
-        {
-            PERROR("Failed to map guest pages");
-            goto err;
-        }
-        nr_pages_mapped = nr_pages;
-
-        for ( i = 0, p = 0; i < nr_pfns; ++i )
+        for ( i = 0; i < nr_pfns; ++i )
         {
             switch ( types[i] )
             {
@@ -172,36 +190,62 @@ static int write_batch(struct xc_sr_context *ctx)
                 continue;
             }
 
-            if ( errors[p] )
+            bgfns[nr_pages++] = gfns[i];
+        }
+
+        if ( nr_pages > 0 )
+        {
+            guest_mapping = xenforeignmemory_map(xch->fmem,
+                ctx->domid, PROT_READ, nr_pages, bgfns, errors);
+            if ( !guest_mapping )
             {
-                ERROR("Mapping of pfn %#"PRIpfn" (gfn %#"PRIpfn") failed %d",
-                      ctx->save.batch_pfns[i], gfns[p], errors[p]);
+                PERROR("Failed to map guest pages");
                 goto err;
             }
+            nr_pages_mapped = nr_pages;
 
-            orig_page = page = guest_mapping + (p * PAGE_SIZE);
-            rc = ctx->save.ops.normalise_page(ctx, types[i], &page);
-
-            if ( orig_page != page )
-                local_pages[i] = page;
-
-            if ( rc )
+            for ( i = 0, p = 0; i < nr_pfns; ++i )
             {
-                if ( rc == -1 && errno == EAGAIN )
+                switch ( types[i] )
                 {
-                    set_bit(ctx->save.batch_pfns[i], ctx->save.deferred_pages);
-                    ++ctx->save.nr_deferred_pages;
-                    types[i] = XEN_DOMCTL_PFINFO_XTAB;
-                    --nr_pages;
+                case XEN_DOMCTL_PFINFO_BROKEN:
+                case XEN_DOMCTL_PFINFO_XALLOC:
+                case XEN_DOMCTL_PFINFO_XTAB:
+                    continue;
+                }
+
+                if ( errors[p] )
+                {
+                    ERROR("Mapping of pfn %#"PRIpfn" (mfn %#"PRIpfn") failed %d",
+                          ctx->save.batch_pfns[i], bgfns[p], errors[p]);
+                    goto err;
+                }
+
+                orig_page = page = guest_mapping + (p * PAGE_SIZE);
+                rc = ctx->save.ops.normalise_page(ctx, types[i], &page);
+
+                if ( orig_page != page )
+                    local_pages[i] = page;
+
+                if ( rc )
+                {
+                    if ( rc == -1 && errno == EAGAIN )
+                    {
+                        set_bit(ctx->save.batch_pfns[i],
+                                ctx->save.deferred_pages);
+                        ++ctx->save.nr_deferred_pages;
+                        types[i] = XEN_DOMCTL_PFINFO_XTAB;
+                        --nr_pages;
+                    }
+                    else
+                        goto err;
                 }
                 else
-                    goto err;
-            }
-            else
-                guest_data[i] = page;
+                    guest_data[i] = page;
 
-            rc = -1;
-            ++p;
+                rc = -1;
+                ++p;
+            }
         }
     }
 
@@ -270,8 +314,7 @@ static int write_batch(struct xc_sr_context *ctx)
     free(local_pages);
     free(guest_data);
     free(errors);
-    free(types);
-    free(gfns);
+    free(bgfns);
 
     return rc;
 }
@@ -281,7 +324,7 @@ static int write_batch(struct xc_sr_context *ctx)
  */
 static bool batch_full(const struct xc_sr_context *ctx)
 {
-    return ctx->save.nr_batch_pfns == MAX_BATCH_SIZE;
+    return ctx->save.nr_batch_pfns == batch_sizes[ctx->save.batch_type];
 }
 
 /*
@@ -298,18 +341,39 @@ static bool batch_empty(struct xc_sr_context *ctx)
 static int flush_batch(struct xc_sr_context *ctx)
 {
     int rc = 0;
+    xc_interface *xch = ctx->xch;
+    xen_pfn_t *gfns = NULL, *types = NULL;
+    unsigned int nr_pfns = ctx->save.nr_batch_pfns;
 
     if ( batch_empty(ctx) )
-        return rc;
+        goto out;
 
-    rc = write_batch(ctx);
+    gfns = malloc(nr_pfns * sizeof(*gfns));
+    types = malloc(nr_pfns * sizeof(*types));
 
+    if ( !gfns || !types )
+    {
+        ERROR("Unable to allocate arrays for a batch of %u pages",
+              nr_pfns);
+        rc = -1;
+        goto out;
+    }
+
+    rc = get_batch_info(ctx, gfns, types);
+    if ( rc )
+        goto out;
+
+    rc = write_batch(ctx, gfns, types);
     if ( !rc )
     {
         VALGRIND_MAKE_MEM_UNDEFINED(ctx->save.batch_pfns,
                                     MAX_BATCH_SIZE *
                                     sizeof(*ctx->save.batch_pfns));
     }
+
+ out:
+    free(gfns);
+    free(types);
 
     return rc;
 }
@@ -319,7 +383,7 @@ static int flush_batch(struct xc_sr_context *ctx)
  */
 static void add_to_batch(struct xc_sr_context *ctx, xen_pfn_t pfn)
 {
-    assert(ctx->save.nr_batch_pfns < MAX_BATCH_SIZE);
+    assert(ctx->save.nr_batch_pfns < batch_sizes[ctx->save.batch_type]);
     ctx->save.batch_pfns[ctx->save.nr_batch_pfns++] = pfn;
 }
 
@@ -391,6 +455,7 @@ static int send_dirty_pages(struct xc_sr_context *ctx,
     void *data = ctx->save.callbacks->data;
 
     assert(batch_empty(ctx));
+    ctx->save.batch_type = XC_SR_SAVE_BATCH_PRECOPY_PAGE;
     while ( p < ctx->save.p2m_size )
     {
         if ( ctx->save.phase == XC_SAVE_PHASE_PRECOPY )
