@@ -571,9 +571,9 @@ static int write_one_vcpu_basic(struct xc_sr_context *ctx, uint32_t id)
     }
 
     if ( ctx->x86_pv.width == 8 )
-        rc = write_split_record(ctx, &rec, &vcpu, sizeof(vcpu.x64));
+        rc = write_split_record(ctx, ctx->fd, &rec, &vcpu, sizeof(vcpu.x64));
     else
-        rc = write_split_record(ctx, &rec, &vcpu, sizeof(vcpu.x32));
+        rc = write_split_record(ctx, ctx->fd, &rec, &vcpu, sizeof(vcpu.x32));
 
  err:
     return rc;
@@ -609,7 +609,7 @@ static int write_one_vcpu_extended(struct xc_sr_context *ctx, uint32_t id)
         return -1;
     }
 
-    return write_split_record(ctx, &rec, &domctl.u.ext_vcpucontext,
+    return write_split_record(ctx, ctx->fd, &rec, &domctl.u.ext_vcpucontext,
                               domctl.u.ext_vcpucontext.size);
 }
 
@@ -664,7 +664,8 @@ static int write_one_vcpu_xsave(struct xc_sr_context *ctx, uint32_t id)
         goto err;
     }
 
-    rc = write_split_record(ctx, &rec, buffer, domctl.u.vcpuextstate.size);
+    rc = write_split_record(ctx, ctx->fd, &rec, buffer,
+                            domctl.u.vcpuextstate.size);
     if ( rc )
         goto err;
 
@@ -730,7 +731,7 @@ static int write_one_vcpu_msrs(struct xc_sr_context *ctx, uint32_t id)
         goto err;
     }
 
-    rc = write_split_record(ctx, &rec, buffer,
+    rc = write_split_record(ctx, ctx->fd, &rec, buffer,
                             domctl.u.vcpu_msrs.msr_count *
                             sizeof(xen_domctl_vcpu_msr_t));
     if ( rc )
@@ -805,7 +806,7 @@ static int write_x86_pv_info(struct xc_sr_context *ctx)
             .data = &info
         };
 
-    return write_record(ctx, &rec);
+    return write_record(ctx, ctx->fd, &rec);
 }
 
 /*
@@ -846,7 +847,7 @@ static int write_x86_pv_p2m_frames(struct xc_sr_context *ctx)
     else
         data = (uint64_t *)ctx->x86_pv.p2m_pfns;
 
-    rc = write_split_record(ctx, &rec, data, datasz);
+    rc = write_split_record(ctx, ctx->fd, &rec, data, datasz);
 
     if ( data != (uint64_t *)ctx->x86_pv.p2m_pfns )
         free(data);
@@ -866,7 +867,7 @@ static int write_shared_info(struct xc_sr_context *ctx)
         .data = ctx->x86_pv.shinfo,
     };
 
-    return write_record(ctx, &rec);
+    return write_record(ctx, ctx->fd, &rec);
 }
 
 /*
