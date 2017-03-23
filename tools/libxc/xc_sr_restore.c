@@ -194,42 +194,44 @@ int populate_pfns(struct xc_sr_context *ctx, unsigned count,
     return rc;
 }
 
+static void set_page_types(struct xc_sr_context *ctx, unsigned count,
+                           xen_pfn_t *pfns, uint32_t *types)
+{
+    unsigned i;
+
+    for ( i = 0; i < count; ++i )
+        ctx->restore.ops.set_page_type(ctx, pfns[i], types[i]);
+}
+
 /*
- * Given a list of pfns, their types, and a block of page data from the
- * stream, populate and record their types, map the relevant subset and copy
- * the data into the guest.
+ * Given count pfns and their types, allocate and fill in buffer bpfns with only
+ * those pfns that are 'backed' by real page data that needs to be migrated.
+ * The caller must later free() *bpfns.
+ *
+ * Returns 0 on success and non-0 on failure.  *bpfns can be free()ed even after
+ * failure.
  */
-static int process_page_data(struct xc_sr_context *ctx, unsigned count,
-                             xen_pfn_t *pfns, uint32_t *types, void *page_data)
+static int filter_pages(struct xc_sr_context *ctx,
+                        unsigned count,
+                        xen_pfn_t *pfns,
+                        uint32_t *types,
+                        /* OUT */ unsigned *nr_pages,
+                        /* OUT */ xen_pfn_t **bpfns)
 {
     xc_interface *xch = ctx->xch;
-    xen_pfn_t *mfns = malloc(count * sizeof(*mfns));
-    int *map_errs = malloc(count * sizeof(*map_errs));
-    int rc;
-    void *mapping = NULL, *guest_page = NULL;
-    unsigned i,    /* i indexes the pfns from the record. */
-        j,         /* j indexes the subset of pfns we decide to map. */
-        nr_pages = 0;
+    unsigned i;
 
-    if ( !mfns || !map_errs )
+    *nr_pages = 0;
+    *bpfns = malloc(count * sizeof(*bpfns));
+    if ( !(*bpfns) )
     {
-        rc = -1;
         ERROR("Failed to allocate %zu bytes to process page data",
-              count * (sizeof(*mfns) + sizeof(*map_errs)));
-        goto err;
-    }
-
-    rc = populate_pfns(ctx, count, pfns, types);
-    if ( rc )
-    {
-        ERROR("Failed to populate pfns for batch of %u pages", count);
-        goto err;
+              count * (sizeof(*bpfns)));
+        return -1;
     }
 
     for ( i = 0; i < count; ++i )
     {
-        ctx->restore.ops.set_page_type(ctx, pfns[i], types[i]);
-
         switch ( types[i] )
         {
         case XEN_DOMCTL_PFINFO_NOTAB:
@@ -246,10 +248,58 @@ static int process_page_data(struct xc_sr_context *ctx, unsigned count,
         case XEN_DOMCTL_PFINFO_L4TAB:
         case XEN_DOMCTL_PFINFO_L4TAB | XEN_DOMCTL_PFINFO_LPINTAB:
 
-            mfns[nr_pages++] = ctx->restore.ops.pfn_to_gfn(ctx, pfns[i]);
+            (*bpfns)[(*nr_pages)++] = pfns[i];
             break;
         }
     }
+
+    return 0;
+}
+
+/*
+ * Given a list of pfns, their types, and a block of page data from the
+ * stream, populate and record their types, map the relevant subset and copy
+ * the data into the guest.
+ */
+static int process_page_data(struct xc_sr_context *ctx, unsigned count,
+                             xen_pfn_t *pfns, uint32_t *types, void *page_data)
+{
+    xc_interface *xch = ctx->xch;
+    xen_pfn_t *mfns = NULL;
+    int *map_errs = malloc(count * sizeof(*map_errs));
+    int rc;
+    void *mapping = NULL, *guest_page = NULL;
+    unsigned i,    /* i indexes the pfns from the record. */
+        j,         /* j indexes the subset of pfns we decide to map. */
+        nr_pages = 0;
+
+    if ( !map_errs )
+    {
+        rc = -1;
+        ERROR("Failed to allocate %zu bytes to process page data",
+              count * sizeof(*map_errs));
+        goto err;
+    }
+
+    rc = populate_pfns(ctx, count, pfns, types);
+    if ( rc )
+    {
+        ERROR("Failed to populate pfns for batch of %u pages", count);
+        goto err;
+    }
+
+    set_page_types(ctx, count, pfns, types);
+
+    rc = filter_pages(ctx, count, pfns, types, &nr_pages, &mfns);
+    if ( rc )
+    {
+        ERROR("Failed to filter mfns for batch of %u pages", count);
+        goto err;
+    }
+
+    /* Map physically-backed pfns ('bpfns') to their gmfns. */
+    for ( i = 0; i < nr_pages; ++i )
+        mfns[i] = ctx->restore.ops.pfn_to_gfn(ctx, mfns[i]);
 
     /* Nothing to do? */
     if ( nr_pages == 0 )
