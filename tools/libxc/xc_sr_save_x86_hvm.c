@@ -42,7 +42,7 @@ static int write_hvm_context(struct xc_sr_context *ctx)
     }
 
     hvm_rec.length = hvm_buf_size;
-    rc = write_record(ctx, &hvm_rec);
+    rc = write_record(ctx, ctx->fd, &hvm_rec);
     if ( rc < 0 )
     {
         PERROR("error write HVM_CONTEXT record");
@@ -116,7 +116,8 @@ static int write_hvm_params(struct xc_sr_context *ctx)
     if ( hdr.count == 0 )
         return 0;
 
-    rc = write_split_record(ctx, &rec, entries, hdr.count * sizeof(*entries));
+    rc = write_split_record(ctx, ctx->fd, &rec, entries,
+                            hdr.count * sizeof(*entries));
     if ( rc )
         PERROR("Failed to write HVM_PARAMS record");
 

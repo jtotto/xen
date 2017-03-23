@@ -52,8 +52,8 @@ const char *rec_type_to_str(uint32_t type)
     return "Reserved";
 }
 
-int write_split_record(struct xc_sr_context *ctx, struct xc_sr_record *rec,
-                       void *buf, size_t sz)
+int write_split_record(struct xc_sr_context *ctx, int fd,
+                       struct xc_sr_record *rec, void *buf, size_t sz)
 {
     static const char zeroes[(1u << REC_ALIGN_ORDER) - 1] = { 0 };
 
@@ -81,7 +81,7 @@ int write_split_record(struct xc_sr_context *ctx, struct xc_sr_record *rec,
     if ( sz )
         assert(buf);
 
-    if ( writev_exact(ctx->fd, parts, ARRAY_SIZE(parts)) )
+    if ( writev_exact(fd, parts, ARRAY_SIZE(parts)) )
         goto err;
 
     return 0;
