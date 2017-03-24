@@ -332,19 +332,21 @@ int libxl__save_emulator_xenstore_data(libxl__domain_save_state *dss,
  * This is the live migration precopy policy - it's called periodically during
  * the precopy phase of live migrations, and is responsible for deciding when
  * the precopy phase should terminate and what should be done next.
- *
- * The policy implemented here behaves identically to the policy previously
- * hard-coded into xc_domain_save() - it proceeds to the stop-and-copy phase of
- * the live migration when there are either fewer than 50 dirty pages, or more
- * than 5 precopy rounds have completed.
  */
 static int libxl__save_live_migration_simple_precopy_policy(
     struct precopy_stats stats, void *user)
 {
-    return ((stats.dirty_count >= 0 && stats.dirty_count < 50) ||
-            stats.iteration >= 5)
-        ? XGS_POLICY_STOP_AND_COPY
-        : XGS_POLICY_CONTINUE_PRECOPY;
+    libxl__save_helper_state *shs = user;
+    libxl__domain_save_state *dss = shs->caller_state;
+
+    if (stats.dirty_count >= 0 &&
+        stats.dirty_count <= dss->precopy_dirty_threshold)
+        return XGS_POLICY_STOP_AND_COPY;
+
+    if (stats.iteration >= dss->precopy_iterations)
+        return XGS_POLICY_STOP_AND_COPY;
+
+    return XGS_POLICY_CONTINUE_PRECOPY;
 }
 
 /*----- main code for saving, in order of execution -----*/
