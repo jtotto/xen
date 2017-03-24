@@ -3292,6 +3292,8 @@ struct libxl__domain_save_state {
     int live;
     int debug;
     int checkpointed_stream;
+    unsigned int precopy_iterations;
+    unsigned int precopy_dirty_threshold;
     const libxl_domain_remus_info *remus;
     /* private */
     int rc;

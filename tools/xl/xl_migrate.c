@@ -177,7 +177,9 @@ static void migrate_do_preamble(int send_fd, int recv_fd, pid_t child,
 }
 
 static void migrate_domain(uint32_t domid, const char *rune, int debug,
-                           const char *override_config_file)
+                           const char *override_config_file,
+                           unsigned int precopy_iterations,
+                           unsigned int precopy_dirty_threshold)
 {
     pid_t child = -1;
     int rc;
@@ -205,7 +207,9 @@ static void migrate_domain(uint32_t domid, const char *rune, int debug,
 
     if (debug)
         flags |= LIBXL_SUSPEND_DEBUG;
-    rc = libxl_domain_suspend(ctx, domid, send_fd, flags, NULL);
+    rc = libxl_domain_live_migrate(ctx, domid, send_fd, flags,
+                                   precopy_iterations, precopy_dirty_threshold,
+                                   NULL);
     if (rc) {
         fprintf(stderr, "migration sender: libxl_domain_suspend failed"
                 " (rc=%d)\n", rc);
@@ -537,13 +541,17 @@ int main_migrate(int argc, char **argv)
     char *rune = NULL;
     char *host;
     int opt, daemonize = 1, monitor = 1, debug = 0, pause_after_migration = 0;
+    int precopy_iterations = LIBXL_LM_PRECOPY_ITERATIONS_DEFAULT,
+        precopy_dirty_threshold = LIBXL_LM_DIRTY_THRESHOLD_DEFAULT;
     static struct option opts[] = {
         {"debug", 0, 0, 0x100},
         {"live", 0, 0, 0x200},
+        {"precopy-iterations", 0, 0, 'i'},
+        {"precopy-threshold", 0, 0, 'd'},
         COMMON_LONG_OPTS
     };
 
-    SWITCH_FOREACH_OPT(opt, "FC:s:ep", opts, "migrate", 2) {
+    SWITCH_FOREACH_OPT(opt, "FC:s:epi:", opts, "migrate", 2) {
     case 'C':
         config_filename = optarg;
         break;
@@ -559,6 +567,20 @@ int main_migrate(int argc, char **argv)
         break;
     case 'p':
         pause_after_migration = 1;
+        break;
+    case 'i':
+        precopy_iterations = atoi(optarg);
+        if (precopy_iterations < 0) {
+            fprintf(stderr, "negative precopy iterations not supported\n");
+            return EXIT_FAILURE;
+        }
+        break;
+    case 'd':
+        precopy_dirty_threshold = atoi(optarg);
+        if (precopy_dirty_threshold < 0) {
+            fprintf(stderr, "negative dirty threshold not supported\n");
+            return EXIT_FAILURE;
+        }
         break;
     case 0x100: /* --debug */
         debug = 1;
@@ -596,7 +618,8 @@ int main_migrate(int argc, char **argv)
                   pause_after_migration ? " -p" : "");
     }
 
-    migrate_domain(domid, rune, debug, config_filename);
+    migrate_domain(domid, rune, debug, config_filename, precopy_iterations,
+                   precopy_dirty_threshold);
     return EXIT_SUCCESS;
 }
 
