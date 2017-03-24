@@ -33,6 +33,7 @@ our @msgs = (
                                               'xen_pfn_t', 'console_gfn'] ],
     [  9, 'srW',    "complete",              [qw(int retval
                                                  int errnoval)] ],
+    [ 10, 'scxW',   "precopy_policy", ['struct precopy_stats', 'stats'] ]
 );
 
 #----------------------------------------
@@ -141,7 +142,8 @@ static void bytes_put(unsigned char *const buf, int *len,
 
 END
 
-foreach my $simpletype (qw(int uint16_t uint32_t unsigned), 'unsigned long', 'xen_pfn_t') {
+foreach my $simpletype (qw(int uint16_t uint32_t unsigned),
+                        'unsigned long', 'xen_pfn_t', 'struct precopy_stats') {
     my $typeid = typeid($simpletype);
     $out_body{'callout'} .= <<END;
 static int ${typeid}_get(const unsigned char **msg,
