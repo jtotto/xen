@@ -157,15 +157,19 @@ struct cmd_spec cmd_table[] = {
       &main_migrate, 0, 1,
       "Migrate a domain to another host",
       "[options] <Domain> <host>",
-      "-h              Print this help.\n"
-      "-C <config>     Send <config> instead of config file from creation.\n"
-      "-s <sshcommand> Use <sshcommand> instead of ssh.  String will be passed\n"
-      "                to sh. If empty, run <host> instead of ssh <host> xl\n"
-      "                migrate-receive [-d -e]\n"
-      "-e              Do not wait in the background (on <host>) for the death\n"
-      "                of the domain.\n"
-      "--debug         Print huge (!) amount of debug during the migration process.\n"
-      "-p              Do not unpause domain after migrating it."
+      "-h                   Print this help.\n"
+      "-C <config>          Send <config> instead of config file from creation.\n"
+      "-s <sshcommand>      Use <sshcommand> instead of ssh.  String will be passed\n"
+      "                     to sh. If empty, run <host> instead of ssh <host> xl\n"
+      "                     migrate-receive [-d -e]\n"
+      "-e                   Do not wait in the background (on <host>) for the death\n"
+      "                     of the domain.\n"
+      "--debug              Print huge (!) amount of debug during the migration process.\n"
+      "-p                   Do not unpause domain after migrating it.\n"
+      "--precopy-iterations Perform at most this many iterations of the precopy\n"
+      "                     memory migration loop before suspending the domain.\n"
+      "--precopy-threshold  If fewer than this many pages are dirty at the end of a\n"
+      "                     copy round, exit the precopy loop and suspend the domain."
     },
     { "restore",
       &main_restore, 0, 1,

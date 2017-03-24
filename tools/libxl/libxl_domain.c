@@ -486,8 +486,10 @@ static void domain_suspend_cb(libxl__egc *egc,
 
 }
 
-int libxl_domain_suspend(libxl_ctx *ctx, uint32_t domid, int fd, int flags,
-                         const libxl_asyncop_how *ao_how)
+static int do_domain_suspend(libxl_ctx *ctx, uint32_t domid, int fd, int flags,
+                             unsigned int precopy_iterations,
+                             unsigned int precopy_dirty_threshold,
+                             const libxl_asyncop_how *ao_how)
 {
     AO_CREATE(ctx, domid, ao_how);
     int rc;
@@ -510,6 +512,8 @@ int libxl_domain_suspend(libxl_ctx *ctx, uint32_t domid, int fd, int flags,
     dss->live = flags & LIBXL_SUSPEND_LIVE;
     dss->debug = flags & LIBXL_SUSPEND_DEBUG;
     dss->checkpointed_stream = LIBXL_CHECKPOINTED_STREAM_NONE;
+    dss->precopy_iterations = precopy_iterations;
+    dss->precopy_dirty_threshold = precopy_dirty_threshold;
 
     rc = libxl__fd_flags_modify_save(gc, dss->fd,
                                      ~(O_NONBLOCK|O_NDELAY), 0,
@@ -521,6 +525,26 @@ int libxl_domain_suspend(libxl_ctx *ctx, uint32_t domid, int fd, int flags,
 
  out_err:
     return AO_CREATE_FAIL(rc);
+}
+
+int libxl_domain_suspend(libxl_ctx *ctx, uint32_t domid, int fd, int flags,
+                         const libxl_asyncop_how *ao_how)
+{
+    return do_domain_suspend(ctx, domid, fd, flags,
+                             LIBXL_LIVE_MIGRATE_PRECOPY_ITERATIONS_DEFAULT,
+                             LIBXL_LIVE_MIGRATE_DIRTY_THRESHOLD_DEFAULT,
+                             ao_how);
+}
+
+int libxl_domain_live_migrate(libxl_ctx *ctx, uint32_t domid, int fd, int flags,
+                              unsigned int precopy_iterations,
+                              unsigned int precopy_dirty_threshold,
+                              const libxl_asyncop_how *ao_how)
+{
+    flags |= LIBXL_SUSPEND_LIVE;
+
+    return do_domain_suspend(ctx, domid, fd, flags, precopy_iterations,
+                             precopy_dirty_threshold, ao_how);
 }
 
 int libxl_domain_pause(libxl_ctx *ctx, uint32_t domid)
