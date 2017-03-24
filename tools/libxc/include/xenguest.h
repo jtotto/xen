@@ -39,12 +39,31 @@
  */
 struct xenevtchn_handle;
 
+/* For save's precopy_policy(). */
+struct precopy_stats
+{
+    unsigned iteration;
+    unsigned total_written;
+    long dirty_count; /* -1 if unknown */
+};
+
 /* callbacks provided by xc_domain_save */
 struct save_callbacks {
     /* Called after expiration of checkpoint interval,
      * to suspend the guest.
      */
     int (*suspend)(void* data);
+
+    /* Called after every batch of page data sent during the precopy phase of a
+     * live migration to ask the caller what to do next based on the current
+     * state of the precopy migration.
+     */
+#define XGS_POLICY_ABORT          (-1) /* Abandon the migration entirely and
+                                        * tidy up. */
+#define XGS_POLICY_CONTINUE_PRECOPY 0  /* Remain in the precopy phase. */
+#define XGS_POLICY_STOP_AND_COPY    1  /* Immediately suspend and transmit the
+                                        * remaining dirty pages. */
+    int (*precopy_policy)(struct precopy_stats stats, void *data);
 
     /* Called after the guest's dirty pages have been
      *  copied into an output buffer.
@@ -100,8 +119,8 @@ typedef enum {
  *        doesn't use checkpointing
  * @return 0 on success, -1 on failure
  */
-int xc_domain_save(xc_interface *xch, int io_fd, uint32_t dom, uint32_t max_iters,
-                   uint32_t max_factor, uint32_t flags /* XCFLAGS_xxx */,
+int xc_domain_save(xc_interface *xch, int io_fd, uint32_t dom,
+                   uint32_t flags /* XCFLAGS_xxx */,
                    struct save_callbacks* callbacks, int hvm,
                    xc_migration_stream_t stream_type, int recv_fd);
 
