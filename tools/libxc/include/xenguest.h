@@ -63,41 +63,65 @@ struct save_callbacks {
 #define XGS_POLICY_CONTINUE_PRECOPY 0  /* Remain in the precopy phase. */
 #define XGS_POLICY_STOP_AND_COPY    1  /* Immediately suspend and transmit the
                                         * remaining dirty pages. */
+#define XGS_POLICY_POSTCOPY         2  /* Suspend the guest and transition into
+                                        * the postcopy phase of the migration. */
     int (*precopy_policy)(struct precopy_stats stats, void *data);
 
-    /* Called after the guest's dirty pages have been
-     *  copied into an output buffer.
-     * Callback function resumes the guest & the device model,
-     *  returns to xc_domain_save.
-     * xc_domain_save then flushes the output buffer, while the
-     *  guest continues to run.
-     */
-    int (*aftercopy)(void* data);
+    /* Checkpointing and postcopy live migration are mutually exclusive. */
+    union {
+        struct {
+            /* Called during a live migration's transition to the postcopy phase
+             * to yield control of the stream back to a higher layer so it can
+             * transmit records needed for resumption of the guest at the
+             * destination (e.g. device model state, xenstore context) */
+            int (*postcopy_transition)(void *data);
 
-    /* Called after the memory checkpoint has been flushed
-     * out into the network. Typical actions performed in this
-     * callback include:
-     *   (a) send the saved device model state (for HVM guests),
-     *   (b) wait for checkpoint ack
-     *   (c) release the network output buffer pertaining to the acked checkpoint.
-     *   (c) sleep for the checkpoint interval.
-     *
-     * returns:
-     * 0: terminate checkpointing gracefully
-     * 1: take another checkpoint */
-    int (*checkpoint)(void* data);
+            /* Called some time after the postcopy transition upon receipt of
+             * the POSTCOPY_COMPLETE record from the destination.  In case of
+             * failure after an attempted postcopy transition, the result
+             * indicates whether or not the domain may have executed at the
+             * destination (and thus whether or not it can be safely resumed at
+             * the source). */
+            void (*postcopy_results)(uint32_t result, void *data);
+        };
 
-    /*
-     * Called after the checkpoint callback.
-     *
-     * returns:
-     * 0: terminate checkpointing gracefully
-     * 1: take another checkpoint
-     */
-    int (*wait_checkpoint)(void* data);
+        struct {
+            /* Called after the guest's dirty pages have been
+             *  copied into an output buffer.
+             * Callback function resumes the guest & the device model,
+             *  returns to xc_domain_save.
+             * xc_domain_save then flushes the output buffer, while the
+             *  guest continues to run.
+             */
+            int (*aftercopy)(void* data);
 
-    /* Enable qemu-dm logging dirty pages to xen */
-    int (*switch_qemu_logdirty)(int domid, unsigned enable, void *data); /* HVM only */
+            /* Called after the memory checkpoint has been flushed
+             * out into the network. Typical actions performed in this
+             * callback include:
+             *   (a) send the saved device model state (for HVM guests),
+             *   (b) wait for checkpoint ack
+             *   (c) release the network output buffer pertaining to the acked
+             *       checkpoint.
+             *   (c) sleep for the checkpoint interval.
+             *
+             * returns:
+             * 0: terminate checkpointing gracefully
+             * 1: take another checkpoint */
+            int (*checkpoint)(void* data);
+
+            /*
+             * Called after the checkpoint callback.
+             *
+             * returns:
+             * 0: terminate checkpointing gracefully
+             * 1: take another checkpoint
+             */
+            int (*wait_checkpoint)(void* data);
+
+            /* Enable qemu-dm logging dirty pages to xen */
+            int (*switch_qemu_logdirty)(int domid, unsigned enable, void *data); /* HVM only */
+        };
+    };
 
     /* to be provided as the last argument to each callback function */
     void* data;

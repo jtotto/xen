@@ -349,6 +349,19 @@ static int libxl__save_live_migration_simple_precopy_policy(
     return XGS_POLICY_CONTINUE_PRECOPY;
 }
 
+static void libxl__save_live_migration_postcopy_transition_callback(void *user)
+{
+    /* XXX we're not yet ready to deal with this */
+    assert(0);
+}
+
+static void libxl__save_live_migration_postcopy_results_callback(
+    uint32_t result, void *user)
+{
+    /* XXX we're not yet ready to deal with this */
+    assert(0);
+}
+
 /*----- main code for saving, in order of execution -----*/
 
 void libxl__domain_save(libxl__egc *egc, libxl__domain_save_state *dss)
@@ -419,8 +432,13 @@ void libxl__domain_save(libxl__egc *egc, libxl__domain_save_state *dss)
             dss->xcflags |= XCFLAGS_CHECKPOINT_COMPRESS;
     }
 
-    if (dss->checkpointed_stream == LIBXL_CHECKPOINTED_STREAM_NONE)
+    if (dss->checkpointed_stream == LIBXL_CHECKPOINTED_STREAM_NONE) {
         callbacks->suspend = libxl__domain_suspend_callback;
+        callbacks->postcopy_transition =
+            libxl__save_live_migration_postcopy_transition_callback;
+        callbacks->postcopy_results =
+            libxl__save_live_migration_postcopy_results_callback;
+    }
 
     callbacks->precopy_policy = libxl__save_live_migration_simple_precopy_policy;
     callbacks->switch_qemu_logdirty = libxl__domain_suspend_common_switch_qemu_logdirty;
