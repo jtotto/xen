@@ -399,6 +399,45 @@ static inline int write_record(struct xc_sr_context *ctx, int fd,
 int read_record(struct xc_sr_context *ctx, int fd, struct xc_sr_record *rec);
 
 /*
+ * try_read_record() (prototype below) reads a record from a _non-blocking_
+ * stream over the course of one or more invocations.  Context for the record
+ * read is maintained in an xc_sr_read_record_context.
+ *
+ * The protocol is:
+ * - call read_record_init() on an uninitialized or previously-destroyed
+ *   read-record context prior to using it to read a record
+ * - call try_read_record() with this initialized context one or more times
+ *   - rc < 0 and errno == EAGAIN/EWOULDBLOCK => try again
+ *   - rc < 0 otherwise => failure
+ *   - rc == 0 => a complete record has been read, and is filled into
+ *     try_read_record()'s rec argument
+ * - after either failure or completion of a record, destroy the context with
+ *   read_record_destroy()
+ */
+struct xc_sr_read_record_context
+{
+    struct xc_sr_context *ctx;
+    size_t offset;
+    struct xc_sr_rhdr rhdr;
+    void *data;
+};
+
+static inline void read_record_init(struct xc_sr_read_record_context *rrctx,
+                                    struct xc_sr_context *ctx)
+{
+    *rrctx = (struct xc_sr_read_record_context) { .ctx = ctx };
+}
+
+int try_read_record(struct xc_sr_read_record_context *rrctx, int fd,
+                    struct xc_sr_record *rec);
+
+static inline void read_record_destroy(struct xc_sr_read_record_context *rrctx)
+{
+    free(rrctx->data);
+    rrctx->data = NULL;
+}
+
+/*
  * Given a record of one of the page data types, validate it by:
  * - checking its actual type against its specific expected type
  * - sanity checking its actual length against its claimed length
