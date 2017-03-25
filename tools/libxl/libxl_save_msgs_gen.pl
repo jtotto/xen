@@ -33,7 +33,8 @@ our @msgs = (
                                               'xen_pfn_t', 'console_gfn'] ],
     [  9, 'srW',    "complete",              [qw(int retval
                                                  int errnoval)] ],
-    [ 10, 'scxW',   "precopy_policy", ['struct precopy_stats', 'stats'] ]
+    [ 10, 'scxW',   "precopy_policy", ['struct precopy_stats', 'stats'] ],
+    [ 11, 'scxA',   "postcopy_transition", [] ]
 );
 
 #----------------------------------------
@@ -225,6 +226,7 @@ foreach my $sr (qw(save restore)) {
 
     f_decl("${setcallbacks}_${sr}", 'helper', 'void',
            "(struct ${sr}_callbacks *cbs, unsigned cbflags)");
+    f_more("${setcallbacks}_${sr}", "    memset(cbs, 0, sizeof(*cbs));\n");
 
     f_more("${receiveds}_${sr}",
            <<END_ALWAYS.($debug ? <<END_DEBUG : '').<<END_ALWAYS);
@@ -335,7 +337,7 @@ END_ALWAYS
         my $c_v = "(1u<<$msgnum)";
         my $c_cb = "cbs->$name";
         $f_more_sr->("    if ($c_cb) cbflags |= $c_v;\n", $enumcallbacks);
-        $f_more_sr->("    $c_cb = (cbflags & $c_v) ? ${encode}_${name} : 0;\n",
+        $f_more_sr->("    if (cbflags & $c_v) $c_cb = ${encode}_${name};\n",
                      $setcallbacks);
     }
     $f_more_sr->("        return 1;\n    }\n\n");
