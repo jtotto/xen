@@ -147,6 +147,73 @@ int read_record(struct xc_sr_context *ctx, int fd, struct xc_sr_record *rec)
     return 0;
 };
 
+int try_read_record(struct xc_sr_read_record_context *rrctx, int fd,
+                    struct xc_sr_record *rec)
+{
+    int rc;
+    xc_interface *xch = rrctx->ctx->xch;
+    size_t offset_out, dataoff, datasz;
+
+    /* If the header isn't yet complete, attempt to finish it first. */
+    if ( rrctx->offset < sizeof(rrctx->rhdr) )
+    {
+        rc = try_read_exact(fd, (char *)&rrctx->rhdr + rrctx->offset,
+                            sizeof(rrctx->rhdr) - rrctx->offset, &offset_out);
+        rrctx->offset += offset_out;
+
+        if ( rc )
+            return rc;
+        else
+            assert(rrctx->offset == sizeof(rrctx->rhdr));
+    }
+
+    datasz = ROUNDUP(rrctx->rhdr.length, REC_ALIGN_ORDER);
+
+    if ( datasz )
+    {
+        if ( !rrctx->data )
+        {
+            rrctx->data = malloc(datasz);
+
+            if ( !rrctx->data )
+            {
+                ERROR("Unable to allocate %zu bytes for record (0x%08x, %s)",
+                      datasz, rrctx->rhdr.type,
+                      rec_type_to_str(rrctx->rhdr.type));
+                return -1;
+            }
+        }
+
+        dataoff = rrctx->offset - sizeof(rrctx->rhdr);
+        rc = try_read_exact(fd, (char *)rrctx->data + dataoff, datasz - dataoff,
+                            &offset_out);
+        rrctx->offset += offset_out;
+
+        if ( rc == -1 )
+        {
+            /* Differentiate between expected and fatal errors. */
+            if ( (errno != EAGAIN) && (errno != EWOULDBLOCK) )
+            {
+                free(rrctx->data);
+                rrctx->data = NULL;
+                PERROR("Failed to read %zu bytes for record (0x%08x, %s)",
+                       datasz, rrctx->rhdr.type,
+                       rec_type_to_str(rrctx->rhdr.type));
+            }
+
+            return rc;
+        }
+    }
+
+    /* Success!  Fill in the output record structure. */
+    rec->type   = rrctx->rhdr.type;
+    rec->length = rrctx->rhdr.length;
+    rec->data   = rrctx->data;
+    rrctx->data = NULL;
+
+    return 0;
+}
+
 int validate_pages_record(struct xc_sr_context *ctx, struct xc_sr_record *rec,
                           uint32_t expected_type)
 {
