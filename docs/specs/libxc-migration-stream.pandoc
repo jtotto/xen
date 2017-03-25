@@ -668,11 +668,8 @@ A typical save record for an x86 HVM guest image would look like:
 2. Domain header
 3. Many PAGE\_DATA records
 4. TSC\_INFO
-5. HVM\_PARAMS
-6. HVM\_CONTEXT
-
-HVM\_PARAMS must precede HVM\_CONTEXT, as certain parameters can affect
-the validity of architectural state in the context.
+5. HVM\_CONTEXT
+6. HVM\_PARAMS
 
 
 Legacy Images (x86 only)
