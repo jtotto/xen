@@ -3,7 +3,8 @@
   Andrew Cooper <<andrew.cooper3@citrix.com>>
   Wen Congyang <<wency@cn.fujitsu.com>>
   Yang Hongyang <<hongyang.yang@easystack.cn>>
-% Revision 1
+  Joshua Otto <<xxx>>
+% Revision 2
 
 Introduction
 ============
@@ -230,6 +231,20 @@ type         0x00000000: END
              0x0000000E: CHECKPOINT
 
              0x0000000F: CHECKPOINT_DIRTY_PFN_LIST (Secondary -> Primary)
+
+             0x00000010: POSTCOPY_BEGIN
+
+             0x00000011: POSTCOPY_PFNS_BEGIN
+
+             0x00000012: POSTCOPY_PFNS
+
+             0x00000013: POSTCOPY_TRANSITION
+
+             0x00000014: POSTCOPY_PAGE_DATA
+
+             0x00000015: POSTCOPY_FAULT
+
+             0x00000016: POSTCOPY_COMPLETE
 
              0x00000010 - 0x7FFFFFFF: Reserved for future _mandatory_
              records.
@@ -624,6 +639,142 @@ The count of pfns is: record->length/sizeof(uint64_t).
 
 \clearpage
 
+POSTCOPY_BEGIN
+--------------
+
+This record must only appear in a truly _live_ migration stream, and is
+transmitted by the migration sender to signal to the destination that
+the migration will (as soon as possible) transition from the memory
+pre-copy phase to the post-copy phase, during which remaining unmigrated
+domain memory is paged over the network on-demand _after_ the guest has
+resumed.
+
+This record _must_ be followed immediately by the domain CPU context
+records (e.g. TSC_INFO, HVM_CONTEXT and HVM_PARAMS for HVM domains).
+This is for practical reasons: in the HVM case, the PAGING_RING_PFN
+parameter must be known at the destination before preparation for paging
+can begin.
+
+This record contains no fields; its body_length is 0.
+
+\clearpage
+
+POSTCOPY_PFNS_BEGIN
+-------------------
+
+During the initiation sequence of a postcopy live migration, this record
+immediately follows the final domain CPU context record and indicates
+the beginning of a sequence of 0 or more POSTCOPY_PFNS records.  The
+destination uses this record as a cue to prepare for postcopy paging.
+
+This record contains no fields; its body_length is 0.
+
+\clearpage
+
+POSTCOPY_PFNS
+-------------
+
+Each POSTCOPY_PFNS record contains an unordered list of 'postcopy PFNS'
+- i.e. pfns that are dirty at the sender and require migration during
+the postcopy phase.  The structure of the record is identical that of
+the PAGE_DATA record type, but omitting any actual trailing page
+contents.
+
+     0     1     2     3     4     5     6     7 octet
+    +-----------------------+-------------------------+
+    | count (C)             | (reserved)              |
+    +-----------------------+-------------------------+
+    | pfn[0]                                          |
+    +-------------------------------------------------+
+    ...
+    +-------------------------------------------------+
+    | pfn[C-1]                                        |
+    +-------------------------------------------------+
+
+\clearpage
+
+POSTCOPY_TRANSITION
+-------------------
+
+This record is transmitted by a postcopy live migration sender after the
+final POSTCOPY_PFNS record, and indicates that the embedded libxc stream
+will be interrupted by content in the higher-layer stream necessary to
+permit resumption of the domain at the destination, and further than
+when the higher-layer content is complete the domain should be resumed
+in postcopy mode at the destination.
+
+This record contains no fields; its body_length is 0.
+
+\clearpage
+
+POSTCOPY_PAGE_DATA
+------------------
+
+This record is identical in meaning and format to the PAGE_DATA record
+type, and is transmitted during live migration by the sender during the
+postcopy phase to transfer batches of outstanding domain memory.
+
+     0     1     2     3     4     5     6     7 octet
+    +-----------------------+-------------------------+
+    | count (C)             | (reserved)              |
+    +-----------------------+-------------------------+
+    | pfn[0]                                          |
+    +-------------------------------------------------+
+    ...
+    +-------------------------------------------------+
+    | pfn[C-1]                                        |
+    +-------------------------------------------------+
+    | page_data[0]...                                 |
+    ...
+    +-------------------------------------------------+
+    | page_data[C-1]...                               |
+    ...
+    +-------------------------------------------------+
+
+It is an error for an XTAB, BROKEN or XALLOC pfn to be transmitted in a
+record of this type, so all pfns must be accompanied by backing data.
+It is an error for a pfn not previously included in a POSTCOPY_PFNS
+record to be included in a record of this type.
+
+\clearpage
+
+POSTCOPY_FAULT
+--------------
+
+A POSTCOPY_FAULT record is transmitted by a postcopy live migration
+_destination_ to communicate an urgent need for a batch of pfns.  It is
+identical in format to the POSTCOPY_PFNS record type, _except_ that the
+type of each page is not encoded in the transmitted pfns.
+
+     0     1     2     3     4     5     6     7 octet
+    +-----------------------+-------------------------+
+    | count (C)             | (reserved)              |
+    +-----------------------+-------------------------+
+    | pfn[0]                                          |
+    +-------------------------------------------------+
+    ...
+    +-------------------------------------------------+
+    | pfn[C-1]                                        |
+    +-------------------------------------------------+
+
+\clearpage
+
+POSTCOPY_COMPLETE
+-----------------
+
+A postcopy live migration _destination_ transmits a POSTCOPY_COMPLETE
+record when the postcopy phase of a migration is complete, if one was
+entered.
+
+This record contains no fields; its body_length is 0.
+
+In addition to reporting the phase completion to the sender, this record
+also enables the migration sender to flush its receive stream of
+in-flight POSTCOPY_FAULT records before handing control of the stream
+back to a higher layer.
+
+\clearpage
+
 Layout
 ======
 
@@ -670,6 +821,30 @@ A typical save record for an x86 HVM guest image would look like:
 4. TSC\_INFO
 5. HVM\_CONTEXT
 6. HVM\_PARAMS
+
+x86 HVM Postcopy Live Migration
+-------------------------------
+
+The bi-directional migration stream for postcopy live migration of an
+x86 HVM guest image would look like:
+
+ 1. Image header
+ 2. Domain header
+ 3. Many (or few!) PAGE\_DATA records
+ 4. POSTCOPY\_BEGIN
+ 5. TSC\_INFO
+ 6. HVM\_CONTEXT
+ 7. HVM\_PARAMS
+ 8. POSTCOPY\_PFNS\_BEGIN
+ 9. Many POSTCOPY\_PFNS records
+10. POSTCOPY\_TRANSITION
+... higher layer stream content ...
+11. Many POSTCOPY\_PAGE\_DATA records
+
+During 11, the destination would reply with (hopefully not too) many
+POSTCOPY\_FAULT records.
+
+After 11, the destination would transmit a final POSTCOPY\_COMPLETE.
 
 
 Legacy Images (x86 only)
