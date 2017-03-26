@@ -3123,9 +3123,7 @@ struct libxl__stream_read_state {
     /* Private */
     int rc;
     bool running;
-    bool in_checkpoint;
     bool sync_teardown; /* Only used to coordinate shutdown on error path. */
-    bool in_checkpoint_state;
     libxl__save_helper_state shs;
     libxl__conversion_helper_state chs;
 
@@ -3135,8 +3133,9 @@ struct libxl__stream_read_state {
     LIBXL_STAILQ_HEAD(, libxl__sr_record_buf) record_queue; /* NOGC */
     enum {
         SRS_PHASE_NORMAL,
-        SRS_PHASE_BUFFERING,
-        SRS_PHASE_UNBUFFERING,
+        SRS_PHASE_CHECKPOINT_BUFFERING,
+        SRS_PHASE_CHECKPOINT_UNBUFFERING,
+        SRS_PHASE_CHECKPOINT_STATE
     } phase;
     bool recursion_guard;
 
