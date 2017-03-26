@@ -3,6 +3,10 @@
 
 #include <stdbool.h>
 
+#include <xenevtchn.h>
+
+#include <xen/vm_event.h>
+
 #include "xg_private.h"
 #include "xg_save_restore.h"
 #include "xc_dom.h"
@@ -232,6 +236,82 @@ struct xc_sr_context
             uint32_t guest_type;
             uint32_t guest_page_size;
 
+            /* Is this a postcopy live migration? */
+            bool postcopy;
+
+            struct xc_sr_restore_paging
+            {
+                xenevtchn_handle *xce_handle;
+                int port;
+                vm_event_back_ring_t back_ring;
+                uint32_t evtchn_port;
+                void *ring_page;
+                void *buffer;
+
+                struct xc_sr_pending_postcopy_request
+                {
+                    xen_pfn_t pfn; /* == INVALID_PFN when not in use */
+
+                    /* As from vm_event_request_t */
+                    uint32_t flags;
+                    uint32_t vcpu_id;
+                } *pending_requests;
+
+                /* The total count of outstanding and requested pfns.  The
+                 * postcopy phase is complete when this reaches 0. */
+                unsigned nr_pending_pfns;
+
+                /* Prior to the receipt of the first POSTCOPY_PFNS record, all
+                 * pfns are 'invalid', meaning that we don't (yet) believe that
+                 * they need to be migrated as part of the postcopy phase.
+                 *
+                 * Pfns received in POSTCOPY_PFNS records become 'outstanding',
+                 * meaning that they must be migrated but haven't yet been
+                 * requested, received or dropped.
+                 *
+                 * A pfn transitions from outstanding to requested when we
+                 * receive a request for it on the paging ring and request it
+                 * from the sender, before having received it.  There is at
+                 * least one valid entry in pending_requests for each requested
+                 * pfn.
+                 *
+                 * A pfn transitions from either outstanding or requested to
+                 * ready when its contents are received.  Responses to all
+                 * previous pager requests for this pfn are pushed at this time,
+                 * and subsequent pager requests for this pfn can be responded
+                 * to immediately.
+                 *
+                 * A pfn transitions from outstanding to dropped if we're
+                 * notified on the ring of the drop.  We track this explicitly
+                 * so that we don't panic upon subsequently receiving the
+                 * contents of this page from the sender.
+                 *
+                 * In summary, the per-pfn postcopy state machine is:
+                 *
+                 * invalid -> outstanding -> requested -> ready
+                 *                |                        ^
+                 *                +------------------------+
+                 *                |
+                 *                +------ -> dropped
+                 *
+                 * The state of each pfn is tracked using these four bitmaps. */
+                unsigned long *outstanding_pfns;
+                unsigned long *requested_pfns;
+                unsigned long *ready_pfns;
+                unsigned long *dropped_pfns;
+
+                /* Used to accumulate batches of pfns for which we must forward
+                 * paging requests to the sender. */
+                uint64_t *request_batch;
+
+                /* For teardown. */
+                bool evtchn_bound, evtchn_opened, paging_enabled, buffer_locked;
+
+                /* So we can sanity-check the sequence of postcopy records in
+                 * the stream. */
+                bool ready;
+            } paging;
+
             /* Plain VM, or checkpoints over time. */
             int checkpointed;
 
@@ -255,7 +335,7 @@ struct xc_sr_context
              * INPUT:  evtchn & domid
              * OUTPUT: gfn
              */
-            xen_pfn_t    xenstore_gfn,    console_gfn;
+            xen_pfn_t    xenstore_gfn,    console_gfn,    paging_ring_gfn;
             unsigned int xenstore_evtchn, console_evtchn;
             domid_t      xenstore_domid,  console_domid;
 
