@@ -31,12 +31,13 @@ typedef struct libxl__sr_rec_hdr
 /* All records must be aligned up to an 8 octet boundary */
 #define REC_ALIGN_ORDER              3U
 
-#define REC_TYPE_END                    0x00000000U
-#define REC_TYPE_LIBXC_CONTEXT          0x00000001U
-#define REC_TYPE_EMULATOR_XENSTORE_DATA 0x00000002U
-#define REC_TYPE_EMULATOR_CONTEXT       0x00000003U
-#define REC_TYPE_CHECKPOINT_END         0x00000004U
-#define REC_TYPE_CHECKPOINT_STATE       0x00000005U
+#define REC_TYPE_END                     0x00000000U
+#define REC_TYPE_LIBXC_CONTEXT           0x00000001U
+#define REC_TYPE_EMULATOR_XENSTORE_DATA  0x00000002U
+#define REC_TYPE_EMULATOR_CONTEXT        0x00000003U
+#define REC_TYPE_CHECKPOINT_END          0x00000004U
+#define REC_TYPE_CHECKPOINT_STATE        0x00000005U
+#define REC_TYPE_POSTCOPY_TRANSITION_END 0x00000006U
 
 typedef struct libxl__sr_emulator_hdr
 {

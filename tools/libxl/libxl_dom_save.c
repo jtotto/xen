@@ -349,17 +349,50 @@ static int libxl__save_live_migration_simple_precopy_policy(
     return XGS_POLICY_CONTINUE_PRECOPY;
 }
 
+static void postcopy_transition_done(libxl__egc *egc,
+                                     libxl__stream_write_state *sws, int rc);
+
 static void libxl__save_live_migration_postcopy_transition_callback(void *user)
 {
-    /* XXX we're not yet ready to deal with this */
-    assert(0);
+    libxl__save_helper_state *shs = user;
+    libxl__stream_write_state *sws = CONTAINER_OF(shs, *sws, shs);
+    sws->postcopy_transition_callback = postcopy_transition_done;
+    libxl__stream_write_start_postcopy_transition(shs->egc, sws);
+}
+
+static void postcopy_transition_done(libxl__egc *egc,
+                                     libxl__stream_write_state *sws,
+                                     int rc)
+{
+    libxl__domain_save_state *dss = sws->dss;
+
+    /* Past here, it's _possible_ that the domain may execute at the
+     * destination, so - unless we're given positive confirmation by the
+     * destination that it failed to resume there - we must not attempt recovery
+     * locally past this point. */
+    assert(dss->postcopy_recovery_safe);
+    *dss->postcopy_recovery_safe = !!rc; /* recovery is certainly safe iff we've
+                                          * already failed - if we haven't, the
+                                          * destination will have enough at this
+                                          * point to resume the guest so we're
+                                          * in the danger zone */
+
+    /* Return control to libxc. */
+    libxl__xc_domain_saverestore_async_callback_done(egc, &sws->shs, !rc);
 }
 
 static void libxl__save_live_migration_postcopy_results_callback(
     uint32_t result, void *user)
 {
-    /* XXX we're not yet ready to deal with this */
-    assert(0);
+    libxl__save_helper_state *shs = user;
+    libxl__domain_save_state *dss = shs->caller_state;
+
+    /* We actually don't really care what the result is for now - if we've
+     * received a positive indication of a result at all then it's safe for us
+     * to attempt a recovery if one is needed.  If the result is a failure
+     * result it will be returned to us via the stream writer. */
+    assert(dss->postcopy_recovery_safe);
+    *dss->postcopy_recovery_safe = true;
 }
 
 /*----- main code for saving, in order of execution -----*/

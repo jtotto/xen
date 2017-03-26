@@ -1369,10 +1369,12 @@ int libxl_domain_suspend(libxl_ctx *ctx, uint32_t domid, int fd,
 #define LIBXL_SUSPEND_DEBUG 1
 #define LIBXL_SUSPEND_LIVE 2
 
-int libxl_domain_live_migrate(libxl_ctx *ctx, uint32_t domid, int fd,
+int libxl_domain_live_migrate(libxl_ctx *ctx, uint32_t domid, int send_fd,
                               int flags, /* LIBXL_SUSPEND_* */
                               unsigned int precopy_iterations,
                               unsigned int precopy_dirty_threshold,
+                              int recv_fd,
+                              bool *postcopy_recovery_safe, /* OUT */
                               const libxl_asyncop_how *ao_how)
                               LIBXL_EXTERNAL_CALLERS_ONLY;
 
