@@ -3211,9 +3211,12 @@ struct libxl__stream_write_state {
     /* Private */
     int rc;
     bool running;
-    bool in_checkpoint;
+    enum {
+        SWS_PHASE_NORMAL,
+        SWS_PHASE_CHECKPOINT,
+        SWS_PHASE_CHECKPOINT_STATE
+    } phase;
     bool sync_teardown;  /* Only used to coordinate shutdown on error path. */
-    bool in_checkpoint_state;
     libxl__save_helper_state shs;
 
     /* Main stream-writing data. */
