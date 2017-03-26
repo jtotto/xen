@@ -338,14 +338,19 @@ int libxl__save_emulator_xenstore_data(libxl__domain_save_state *dss,
  * the live migration when there are either fewer than 50 dirty pages, or more
  * than 5 precopy rounds have completed.
  */
-static int libxl__save_live_migration_precopy_policy(
-    struct precopy_stats stats, void *user)
+static int libxl__save_live_migration_precopy_policy(struct precopy_stats stats,
+                                                     void *user)
 {
-    if (stats.dirty_count >= 0 && stats.dirty_count < 50)
-        return XGS_POLICY_STOP_AND_COPY;
+    libxl__save_helper_state *shs = user;
+    libxl__domain_save_state *dss = shs->caller_state;
 
-    if (stats.iteration >= 5)
-        return XGS_POLICY_STOP_AND_COPY;
+    if ((stats.dirty_count >= 0 &&
+         stats.dirty_count <= 50) ||
+        (stats.iteration >= 5)) {
+        return (dss->memory_strategy == LIBXL_LM_MEMORY_POSTCOPY)
+            ? XGS_POLICY_POSTCOPY
+            : XGS_POLICY_STOP_AND_COPY;
+    }
 
     return XGS_POLICY_CONTINUE_PRECOPY;
 }

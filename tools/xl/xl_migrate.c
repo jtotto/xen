@@ -177,7 +177,8 @@ static void migrate_do_preamble(int send_fd, int recv_fd, pid_t child,
 }
 
 static void migrate_domain(uint32_t domid, const char *rune, int debug,
-                           const char *override_config_file)
+                           const char *override_config_file,
+                           int memory_strategy)
 {
     pid_t child = -1;
     int rc;
@@ -207,16 +208,32 @@ static void migrate_domain(uint32_t domid, const char *rune, int debug,
     if (debug)
         flags |= LIBXL_SUSPEND_DEBUG;
     rc = libxl_domain_live_migrate(ctx, domid, send_fd, flags,
-                                   recv_fd, &postcopy_transitioned, NULL);
-    assert(!postcopy_transitioned);
-
+                                   recv_fd, &postcopy_transitioned,
+                                   memory_strategy, NULL);
     if (rc) {
         fprintf(stderr, "migration sender: libxl_domain_suspend failed"
                 " (rc=%d)\n", rc);
-        if (rc == ERROR_GUEST_TIMEDOUT)
+        if (postcopy_transitioned)
+            goto failed_postcopy;
+        else if (rc == ERROR_GUEST_TIMEDOUT)
             goto failed_suspend;
         else
             goto failed_resume;
+    }
+
+    /*
+     * No need for additional ceremony if we already resumed the guest as part
+     * of a postcopy live migration.
+     */
+    if (postcopy_transitioned) {
+        /* It doesn't matter if something happens to the pipe after we get to
+         * this point - we only bother to synchronize here for tidiness. */
+        migrate_read_fixedmessage(recv_fd, migrate_postcopy_sync,
+                                  sizeof(migrate_postcopy_sync),
+                                  "postcopy sync", rune);
+        libxl_domain_destroy(ctx, domid, 0);
+        fprintf(stderr, "Migration successful.\n");
+        exit(EXIT_SUCCESS);
     }
 
     //fprintf(stderr, "migration sender: Transfer complete.\n");
@@ -317,6 +334,21 @@ static void migrate_domain(uint32_t domid, const char *rune, int debug,
     close(send_fd);
     migration_child_report(recv_fd);
     exit(EXIT_FAILURE);
+
+ failed_postcopy:
+    if (common_domname) {
+        xasprintf(&away_domname, "%s--postcopy-inconsistent", common_domname);
+        libxl_domain_rename(ctx, domid, common_domname, away_domname);
+    }
+
+    fprintf(stderr,
+ "** Migration failed during memory postcopy **\n"
+ "It's possible that the guest has executed/is executing at the destination,\n"
+ " so resuming it here now may be unsafe.\n");
+
+    close(send_fd);
+    migration_child_report(recv_fd);
+    exit(EXIT_FAILURE);
 }
 
 static void migrate_receive(int debug, int daemonize, int monitor,
@@ -330,6 +362,7 @@ static void migrate_receive(int debug, int daemonize, int monitor,
     int rc, rc2;
     char rc_buf;
     char *migration_domname;
+    bool postcopy_resumed;
     struct domain_create dom_info;
 
     signal(SIGPIPE, SIG_IGN);
@@ -349,6 +382,7 @@ static void migrate_receive(int debug, int daemonize, int monitor,
     dom_info.paused = 1;
     dom_info.migrate_fd = recv_fd;
     dom_info.send_back_fd = send_fd;
+    dom_info.postcopy_resumed = &postcopy_resumed;
     dom_info.migration_domname_r = &migration_domname;
     dom_info.checkpointed_stream = checkpointed;
     dom_info.colo_proxy_script = colo_proxy_script;
@@ -410,6 +444,20 @@ static void migrate_receive(int debug, int daemonize, int monitor,
         /* do nothing */
         break;
     }
+
+    /*
+     * No need for additional ceremony if we already resumed the guest as part
+     * of a postcopy live migration.
+     */
+    if (postcopy_resumed) {
+        libxl_write_exactly(ctx, send_fd, migrate_postcopy_sync,
+                            sizeof(migrate_postcopy_sync),
+                            "migration ack stream", "postcopy sync");
+        fprintf(stderr, "migration target: Domain started successsfully.\n");
+        libxl_domain_rename(ctx, domid, migration_domname, common_domname);
+        exit(EXIT_SUCCESS);
+    }
+
 
     fprintf(stderr, "migration target: Transfer complete,"
             " requesting permission to start domain.\n");
@@ -541,9 +589,11 @@ int main_migrate(int argc, char **argv)
     char *rune = NULL;
     char *host;
     int opt, daemonize = 1, monitor = 1, debug = 0, pause_after_migration = 0;
+    int memory_strategy = LIBXL_LM_MEMORY_DEFAULT;
     static struct option opts[] = {
         {"debug", 0, 0, 0x100},
         {"live", 0, 0, 0x200},
+        {"postcopy", 0, 0, 0x400},
         COMMON_LONG_OPTS
     };
 
@@ -569,6 +619,9 @@ int main_migrate(int argc, char **argv)
         break;
     case 0x200: /* --live */
         /* ignored for compatibility with xm */
+        break;
+    case 0x400: /* --postcopy */
+        memory_strategy = LIBXL_LM_MEMORY_POSTCOPY;
         break;
     }
 
@@ -600,7 +653,7 @@ int main_migrate(int argc, char **argv)
                   pause_after_migration ? " -p" : "");
     }
 
-    migrate_domain(domid, rune, debug, config_filename);
+    migrate_domain(domid, rune, debug, config_filename, memory_strategy);
     return EXIT_SUCCESS;
 }
 

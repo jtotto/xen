@@ -166,6 +166,9 @@ struct cmd_spec cmd_table[] = {
       "                of the domain.\n"
       "--debug         Print huge (!) amount of debug during the migration process.\n"
       "-p              Do not unpause domain after migrating it."
+      "--postcopy      At the end of the iterative precopy phase, transition to a\n"
+      "                postcopy memory migration rather than performing a stop-and-copy\n"
+      "                migration of the outstanding dirty pages.\n"
     },
     { "restore",
       &main_restore, 0, 1,
