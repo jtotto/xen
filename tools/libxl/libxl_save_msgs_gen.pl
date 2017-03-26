@@ -34,7 +34,7 @@ our @msgs = (
     [  9, 'srW',    "complete",              [qw(int retval
                                                  int errnoval)] ],
     [ 10, 'scxW',   "precopy_policy", ['struct precopy_stats', 'stats'] ],
-    [ 11, 'scxA',   "postcopy_transition", [] ]
+    [ 11, 'srcxA',  "postcopy_transition", [] ]
 );
 
 #----------------------------------------

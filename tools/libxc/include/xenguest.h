@@ -146,35 +146,50 @@ struct restore_callbacks {
      */
     int (*suspend)(void* data);
 
-    /* Called after the secondary vm is ready to resume.
-     * Callback function resumes the guest & the device model,
-     * returns to xc_domain_restore.
-     */
-    int (*aftercopy)(void* data);
+    union {
+        struct {
+            /* Called upon receipt of the POSTCOPY_TRANSITION record in the
+             * stream to yield control of the stream to the higher layer so that
+             * the remaining data needed to resume the domain in the postcopy
+             * phase can be obtained.  Returns as soon as the higher layer is
+             * finished with the stream.
+             *
+             * Returns 1 on success, 0 on failure. */
+            int (*postcopy_transition)(void *data);
+        };
 
-    /* A checkpoint record has been found in the stream.
-     * returns: */
+        struct {
+            /* Called after the secondary vm is ready to resume.
+             * Callback function resumes the guest & the device model,
+             * returns to xc_domain_restore.
+             */
+            int (*aftercopy)(void* data);
+
+            /* A checkpoint record has been found in the stream.
+             * returns: */
 #define XGR_CHECKPOINT_ERROR    0 /* Terminate processing */
 #define XGR_CHECKPOINT_SUCCESS  1 /* Continue reading more data from the stream */
 #define XGR_CHECKPOINT_FAILOVER 2 /* Failover and resume VM */
-    int (*checkpoint)(void* data);
+            int (*checkpoint)(void* data);
 
-    /*
-     * Called after the checkpoint callback.
-     *
-     * returns:
-     * 0: terminate checkpointing gracefully
-     * 1: take another checkpoint
-     */
-    int (*wait_checkpoint)(void* data);
+            /*
+             * Called after the checkpoint callback.
+             *
+             * returns:
+             * 0: terminate checkpointing gracefully
+             * 1: take another checkpoint
+             */
+            int (*wait_checkpoint)(void* data);
 
-    /*
-     * callback to send store gfn and console gfn to xl
-     * if we want to resume vm before xc_domain_save()
-     * exits.
-     */
-    void (*restore_results)(xen_pfn_t store_gfn, xen_pfn_t console_gfn,
-                            void *data);
+            /*
+             * callback to send store gfn and console gfn to xl
+             * if we want to resume vm before xc_domain_save()
+             * exits.
+             */
+            void (*restore_results)(xen_pfn_t store_gfn, xen_pfn_t console_gfn,
+                                    void *data);
+        };
+    };
 
     /* to be provided as the last argument to each callback function */
     void* data;

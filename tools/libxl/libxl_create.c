@@ -745,6 +745,8 @@ static void domcreate_bootloader_done(libxl__egc *egc,
                                       libxl__bootloader_state *bl,
                                       int rc);
 
+static void domcreate_postcopy_transition_callback(void *user);
+
 static void domcreate_launch_dm(libxl__egc *egc, libxl__multidev *aodevs,
                                 int ret);
 
@@ -1097,6 +1099,11 @@ static void domcreate_bootloader_done(libxl__egc *egc,
             libxl__remus_restore_setup(egc, dcs);
             /* fall through */
         case LIBXL_CHECKPOINTED_STREAM_NONE:
+            /* When the restore helper initiates the postcopy transition, pick
+             * up in domcreate_postcopy_transition_callback() */
+            callbacks->postcopy_transition =
+                domcreate_postcopy_transition_callback;
+
             libxl__stream_read_start(egc, &dcs->srs);
         }
         return;
@@ -1104,6 +1111,14 @@ static void domcreate_bootloader_done(libxl__egc *egc,
 
  out:
     domcreate_stream_done(egc, &dcs->srs, rc);
+}
+
+/* ----- postcopy live migration ----- */
+
+static void domcreate_postcopy_transition_callback(void *user)
+{
+    /* XXX we're not ready to deal with this yet */
+    assert(0);
 }
 
 void libxl__srm_callout_callback_restore_results(xen_pfn_t store_mfn,
