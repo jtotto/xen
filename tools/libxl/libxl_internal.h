@@ -3313,6 +3313,7 @@ struct libxl__domain_save_state {
     int fd;
     int fdfl; /* original flags on fd */
     int recv_fd;
+    int memory_strategy;
     bool *postcopy_transitioned;
     libxl_domain_type type;
     int live;

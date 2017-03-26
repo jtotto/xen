@@ -1401,13 +1401,17 @@ int libxl_domain_live_migrate(libxl_ctx *ctx, uint32_t domid, int send_fd,
                               int flags, /* LIBXL_SUSPEND_* */
                               unsigned int precopy_iterations,
                               unsigned int precopy_dirty_threshold,
-                              int recv_fd,
+                              int recv_fd, int memory_strategy,
                               bool *postcopy_transitioned, /* OUT */
                               const libxl_asyncop_how *ao_how)
                               LIBXL_EXTERNAL_CALLERS_ONLY;
 
 #define LIBXL_LM_PRECOPY_ITERATIONS_DEFAULT 5
 #define LIBXL_LM_DIRTY_THRESHOLD_DEFAULT 50
+
+#define LIBXL_LM_MEMORY_STOP_AND_COPY 0
+#define LIBXL_LM_MEMORY_POSTCOPY 1
+#define LIBXL_LM_MEMORY_DEFAULT LIBXL_LM_MEMORY_STOP_AND_COPY
 
 /* @param suspend_cancel [from xenctrl.h:xc_domain_resume( @param fast )]
  *   If this parameter is true, use co-operative resume. The guest
