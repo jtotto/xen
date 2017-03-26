@@ -35,6 +35,7 @@
  * Undefined    undef  undef                    undef    undef
  * Idle         false  undef                    0        0
  * Active       true   NORMAL                   0/1      0/partial
+ * Active       true   POSTCOPY_TRANSITION      0/1      0/partial
  * Active       true   CHECKPOINT_BUFFERING     any      0/partial
  * Active       true   CHECKPOINT_UNBUFFERING   any      0
  * Active       true   CHECKPOINT_STATE         0/1      0/partial
@@ -133,6 +134,8 @@
 /* Success/error/cleanup handling. */
 static void stream_complete(libxl__egc *egc,
                             libxl__stream_read_state *stream, int rc);
+static void postcopy_transition_done(libxl__egc *egc,
+                                     libxl__stream_read_state *stream, int rc);
 static void checkpoint_done(libxl__egc *egc,
                             libxl__stream_read_state *stream, int rc);
 static void stream_done(libxl__egc *egc,
@@ -222,6 +225,7 @@ void libxl__stream_read_init(libxl__stream_read_state *stream)
     FILLZERO(stream->hdr);
     LIBXL_STAILQ_INIT(&stream->record_queue);
     stream->phase = SRS_PHASE_NORMAL;
+    stream->postcopy_transitioned = false;
     stream->recursion_guard = false;
     stream->incoming_record = NULL;
     FILLZERO(stream->emu_dc);
@@ -297,6 +301,26 @@ void libxl__stream_read_start(libxl__egc *egc,
  err:
     assert(rc);
     stream_complete(egc, stream, rc);
+}
+
+void libxl__stream_read_start_postcopy_transition(
+    libxl__egc *egc,
+    libxl__stream_read_state *stream)
+{
+    int checkpointed_stream = stream->dcs->restore_params.checkpointed_stream;
+
+    assert(stream->running);
+    assert(checkpointed_stream == LIBXL_CHECKPOINTED_STREAM_NONE);
+    assert(stream->phase == SRS_PHASE_NORMAL);
+    assert(!stream->postcopy_transitioned);
+
+    stream->phase = SRS_PHASE_POSTCOPY_TRANSITION;
+
+    /*
+     * Libxc has handed control of the fd to us.  Start reading some
+     * libxl records out of it.
+     */
+    stream_continue(egc, stream);
 }
 
 void libxl__stream_read_start_checkpoint(libxl__egc *egc,
@@ -397,6 +421,7 @@ static void stream_continue(libxl__egc *egc,
 
     switch (stream->phase) {
     case SRS_PHASE_NORMAL:
+    case SRS_PHASE_POSTCOPY_TRANSITION:
     case SRS_PHASE_CHECKPOINT_STATE:
         /*
          * Normal phase (regular migration or restore from file):
@@ -576,6 +601,13 @@ static bool process_record(libxl__egc *egc,
 
     LOG(DEBUG, "Record: %u, length %u", rec->hdr.type, rec->hdr.length);
 
+    if (stream->postcopy_transitioned &&
+        rec->hdr.type != REC_TYPE_END) {
+        rc = ERROR_FAIL;
+        LOG(ERROR, "Received non-end record after postcopy transition");
+        goto err;
+    }
+
     switch (rec->hdr.type) {
 
     case REC_TYPE_END:
@@ -625,6 +657,15 @@ static bool process_record(libxl__egc *egc,
         }
 
         write_emulator_blob(egc, stream, rec);
+        break;
+
+    case REC_TYPE_POSTCOPY_TRANSITION_END:
+        if (stream->phase != SRS_PHASE_POSTCOPY_TRANSITION) {
+            LOG(ERROR, "Unexpected POSTCOPY_TRANSITION_END record in stream");
+            rc = ERROR_FAIL;
+            goto err;
+        }
+        postcopy_transition_done(egc, stream, 0);
         break;
 
     case REC_TYPE_CHECKPOINT_END:
@@ -761,6 +802,13 @@ static void stream_complete(libxl__egc *egc,
          */
         checkpoint_done(egc, stream, rc);
         break;
+    case SRS_PHASE_POSTCOPY_TRANSITION:
+        assert(rc);
+
+        /*
+         * To deal with errors during the postcopy transition, we use the same
+         * strategy as during checkpoints.
+         */
     case SRS_PHASE_CHECKPOINT_STATE:
         assert(rc);
 
@@ -775,6 +823,15 @@ static void stream_complete(libxl__egc *egc,
         checkpoint_state_done(egc, stream, rc);
         break;
     }
+}
+
+static void postcopy_transition_done(libxl__egc *egc,
+                                     libxl__stream_read_state *stream, int rc)
+{
+    assert(stream->phase == SRS_PHASE_POSTCOPY_TRANSITION);
+    stream->postcopy_transitioned = true;
+    stream->phase = SRS_PHASE_NORMAL;
+    stream->postcopy_transition_callback(egc, stream, rc);
 }
 
 static void checkpoint_done(libxl__egc *egc,

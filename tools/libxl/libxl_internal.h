@@ -3117,9 +3117,15 @@ struct libxl__stream_read_state {
     void (*completion_callback)(libxl__egc *egc,
                                 libxl__stream_read_state *srs,
                                 int rc);
-    void (*checkpoint_callback)(libxl__egc *egc,
-                                libxl__stream_read_state *srs,
-                                int rc);
+    /* Checkpointing and postcopy live migration are mutually exclusive. */
+    union {
+        void (*checkpoint_callback)(libxl__egc *egc,
+                                    libxl__stream_read_state *srs,
+                                    int rc);
+        void (*postcopy_transition_callback)(libxl__egc *egc,
+                                             libxl__stream_read_state *srs,
+                                             int rc);
+    };
     /* Private */
     int rc;
     bool running;
@@ -3133,10 +3139,12 @@ struct libxl__stream_read_state {
     LIBXL_STAILQ_HEAD(, libxl__sr_record_buf) record_queue; /* NOGC */
     enum {
         SRS_PHASE_NORMAL,
+        SRS_PHASE_POSTCOPY_TRANSITION,
         SRS_PHASE_CHECKPOINT_BUFFERING,
         SRS_PHASE_CHECKPOINT_UNBUFFERING,
         SRS_PHASE_CHECKPOINT_STATE
     } phase;
+    bool postcopy_transitioned;
     bool recursion_guard;
 
     /* Only used while actively reading a record from the stream. */
@@ -3150,6 +3158,9 @@ struct libxl__stream_read_state {
 _hidden void libxl__stream_read_init(libxl__stream_read_state *stream);
 _hidden void libxl__stream_read_start(libxl__egc *egc,
                                       libxl__stream_read_state *stream);
+_hidden void libxl__stream_read_start_postcopy_transition(
+    libxl__egc *egc,
+    libxl__stream_read_state *stream);
 _hidden void libxl__stream_read_start_checkpoint(libxl__egc *egc,
                                                  libxl__stream_read_state *stream);
 _hidden void libxl__stream_read_checkpoint_state(libxl__egc *egc,
@@ -3702,8 +3713,34 @@ struct libxl__domain_create_state {
     int restore_fd, libxc_fd;
     int restore_fdfl; /* original flags of restore_fd */
     int send_back_fd;
+    bool *postcopy_resumed;
     libxl_domain_restore_params restore_params;
     uint32_t domid_soft_reset;
+    struct {
+        /* Is a postcopy resumption in progress? (i.e. does the rest of this
+         * state have any meaning?) */
+        bool active;
+
+        struct {
+            enum {
+                DCS_POSTCOPY_RESUME_INPROGRESS,
+                DCS_POSTCOPY_RESUME_FAILED,
+                DCS_POSTCOPY_RESUME_SUCCESS
+            } state;
+
+            int rc;
+        } resume;
+
+        struct {
+            enum {
+                DCS_POSTCOPY_STREAM_INPROGRESS,
+                DCS_POSTCOPY_STREAM_FAILED,
+                DCS_POSTCOPY_STREAM_SUCCESS
+            } state;
+
+            int rc;
+        } stream;
+    } postcopy;
     libxl__domain_create_cb *callback;
     libxl_asyncprogress_how aop_console_how;
     /* private to domain_create */
