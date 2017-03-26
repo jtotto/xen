@@ -1387,6 +1387,13 @@ int libxl_domain_suspend(libxl_ctx *ctx, uint32_t domid, int fd,
 #define LIBXL_SUSPEND_DEBUG 1
 #define LIBXL_SUSPEND_LIVE 2
 
+int libxl_domain_live_migrate(libxl_ctx *ctx, uint32_t domid, int send_fd,
+                              int flags, /* LIBXL_SUSPEND_* */
+                              int recv_fd,
+                              bool *postcopy_transitioned, /* OUT */
+                              const libxl_asyncop_how *ao_how)
+                              LIBXL_EXTERNAL_CALLERS_ONLY;
+
 /* @param suspend_cancel [from xenctrl.h:xc_domain_resume( @param fast )]
  *   If this parameter is true, use co-operative resume. The guest
  *   must support this.

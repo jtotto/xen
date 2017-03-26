@@ -3204,17 +3204,25 @@ struct libxl__stream_write_state {
     void (*completion_callback)(libxl__egc *egc,
                                 libxl__stream_write_state *sws,
                                 int rc);
-    void (*checkpoint_callback)(libxl__egc *egc,
-                                libxl__stream_write_state *sws,
-                                int rc);
+    /* Checkpointing and postcopy live migration are mutually exclusive. */
+    union {
+        void (*checkpoint_callback)(libxl__egc *egc,
+                                    libxl__stream_write_state *sws,
+                                    int rc);
+        void (*postcopy_transition_callback)(libxl__egc *egc,
+                                             libxl__stream_write_state *sws,
+                                             int rc);
+    };
     /* Private */
     int rc;
     bool running;
     enum {
         SWS_PHASE_NORMAL,
         SWS_PHASE_CHECKPOINT,
-        SWS_PHASE_CHECKPOINT_STATE
+        SWS_PHASE_CHECKPOINT_STATE,
+        SWS_PHASE_POSTCOPY_TRANSITION
     } phase;
+    bool postcopy_transitioned;
     bool sync_teardown;  /* Only used to coordinate shutdown on error path. */
     libxl__save_helper_state shs;
 
@@ -3236,6 +3244,10 @@ struct libxl__stream_write_state {
 _hidden void libxl__stream_write_init(libxl__stream_write_state *stream);
 _hidden void libxl__stream_write_start(libxl__egc *egc,
                                        libxl__stream_write_state *stream);
+_hidden void
+libxl__stream_write_start_postcopy_transition(
+    libxl__egc *egc,
+    libxl__stream_write_state *stream);
 _hidden void
 libxl__stream_write_start_checkpoint(libxl__egc *egc,
                                      libxl__stream_write_state *stream);
@@ -3300,6 +3312,7 @@ struct libxl__domain_save_state {
     int fd;
     int fdfl; /* original flags on fd */
     int recv_fd;
+    bool *postcopy_transitioned;
     libxl_domain_type type;
     int live;
     int debug;

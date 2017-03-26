@@ -186,6 +186,7 @@ static void migrate_domain(uint32_t domid, const char *rune, int debug,
     char rc_buf;
     uint8_t *config_data;
     int config_len, flags = LIBXL_SUSPEND_LIVE;
+    bool postcopy_transitioned;
 
     save_domain_core_begin(domid, override_config_file,
                            &config_data, &config_len);
@@ -205,7 +206,10 @@ static void migrate_domain(uint32_t domid, const char *rune, int debug,
 
     if (debug)
         flags |= LIBXL_SUSPEND_DEBUG;
-    rc = libxl_domain_suspend(ctx, domid, send_fd, flags, NULL);
+    rc = libxl_domain_live_migrate(ctx, domid, send_fd, flags,
+                                   recv_fd, &postcopy_transitioned, NULL);
+    assert(!postcopy_transitioned);
+
     if (rc) {
         fprintf(stderr, "migration sender: libxl_domain_suspend failed"
                 " (rc=%d)\n", rc);
