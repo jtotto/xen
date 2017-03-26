@@ -349,10 +349,31 @@ static int libxl__save_live_migration_simple_precopy_policy(
     return XGS_POLICY_CONTINUE_PRECOPY;
 }
 
+static void postcopy_transition_done(libxl__egc *egc,
+                                     libxl__stream_write_state *sws, int rc);
+
 static void libxl__save_live_migration_postcopy_transition_callback(void *user)
 {
-    /* XXX we're not yet ready to deal with this */
-    assert(0);
+    libxl__save_helper_state *shs = user;
+    libxl__stream_write_state *sws = CONTAINER_OF(shs, *sws, shs);
+    sws->postcopy_transition_callback = postcopy_transition_done;
+    libxl__stream_write_start_postcopy_transition(shs->egc, sws);
+}
+
+static void postcopy_transition_done(libxl__egc *egc,
+                                     libxl__stream_write_state *sws,
+                                     int rc)
+{
+    libxl__domain_save_state *dss = sws->dss;
+
+    /* Past here, it's _possible_ that the domain may execute at the
+     * destination, so - unless we're given positive confirmation by the
+     * destination that it failed to resume there - we must assume it has. */
+    assert(dss->postcopy_transitioned);
+    *dss->postcopy_transitioned = !rc;
+
+    /* Return control to libxc. */
+    libxl__xc_domain_saverestore_async_callback_done(egc, &sws->shs, !rc);
 }
 
 /*----- main code for saving, in order of execution -----*/
