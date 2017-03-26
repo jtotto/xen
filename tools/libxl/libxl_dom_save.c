@@ -333,18 +333,19 @@ int libxl__save_emulator_xenstore_data(libxl__domain_save_state *dss,
  * the precopy phase of live migrations, and is responsible for deciding when
  * the precopy phase should terminate and what should be done next.
  */
-static int libxl__save_live_migration_simple_precopy_policy(
-    struct precopy_stats stats, void *user)
+static int libxl__save_live_migration_precopy_policy(struct precopy_stats stats,
+                                                     void *user)
 {
     libxl__save_helper_state *shs = user;
     libxl__domain_save_state *dss = shs->caller_state;
 
-    if (stats.dirty_count >= 0 &&
-        stats.dirty_count <= dss->precopy_dirty_threshold)
-        return XGS_POLICY_STOP_AND_COPY;
-
-    if (stats.iteration >= dss->precopy_iterations)
-        return XGS_POLICY_STOP_AND_COPY;
+    if ((stats.dirty_count >= 0 &&
+         stats.dirty_count <= dss->precopy_dirty_threshold) ||
+        (stats.iteration >= dss->precopy_iterations)) {
+        return (dss->memory_strategy == LIBXL_LM_MEMORY_POSTCOPY)
+            ? XGS_POLICY_POSTCOPY
+            : XGS_POLICY_STOP_AND_COPY;
+    }
 
     return XGS_POLICY_CONTINUE_PRECOPY;
 }
@@ -452,7 +453,7 @@ void libxl__domain_save(libxl__egc *egc, libxl__domain_save_state *dss)
             libxl__save_live_migration_postcopy_transition_callback;
     }
 
-    callbacks->precopy_policy = libxl__save_live_migration_simple_precopy_policy;
+    callbacks->precopy_policy = libxl__save_live_migration_precopy_policy;
     callbacks->switch_qemu_logdirty = libxl__domain_suspend_common_switch_qemu_logdirty;
 
     dss->sws.ao  = dss->ao;

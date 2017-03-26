@@ -169,7 +169,10 @@ struct cmd_spec cmd_table[] = {
       "--precopy-iterations Perform at most this many iterations of the precopy\n"
       "                     memory migration loop before suspending the domain.\n"
       "--precopy-threshold  If fewer than this many pages are dirty at the end of a\n"
-      "                     copy round, exit the precopy loop and suspend the domain."
+      "                     copy round, exit the precopy loop and suspend the domain.\n"
+      "--postcopy           At the end of the iterative precopy phase, transition to a\n"
+      "                     postcopy memory migration rather than performing a stop-and-copy\n"
+      "                     migration of the outstanding dirty pages.\n"
     },
     { "restore",
       &main_restore, 0, 1,

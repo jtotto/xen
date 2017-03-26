@@ -489,6 +489,7 @@ static void domain_suspend_cb(libxl__egc *egc,
 static int do_domain_suspend(libxl_ctx *ctx, uint32_t domid, int fd, int flags,
                              unsigned int precopy_iterations,
                              unsigned int precopy_dirty_threshold, int recv_fd,
+                             int memory_strategy,
                              bool *postcopy_transitioned,
                              const libxl_asyncop_how *ao_how)
 {
@@ -510,7 +511,8 @@ static int do_domain_suspend(libxl_ctx *ctx, uint32_t domid, int fd, int flags,
     dss->domid = domid;
     dss->fd = fd;
     dss->recv_fd = recv_fd;
-    dss->postcopy_transitioned = postcopy_resumed_remotely;
+    dss->memory_strategy = memory_strategy;
+    dss->postcopy_transitioned = postcopy_transitioned;
     dss->type = type;
     dss->live = flags & LIBXL_SUSPEND_LIVE;
     dss->debug = flags & LIBXL_SUSPEND_DEBUG;
@@ -536,12 +538,13 @@ int libxl_domain_suspend(libxl_ctx *ctx, uint32_t domid, int fd, int flags,
     return do_domain_suspend(ctx, domid, fd, flags,
                              LIBXL_LM_PRECOPY_ITERATIONS_DEFAULT,
                              LIBXL_LM_DIRTY_THRESHOLD_DEFAULT, -1,
-                             NULL, ao_how);
+                             LIBXL_LM_MEMORY_DEFAULT, NULL, ao_how);
 }
 
 int libxl_domain_live_migrate(libxl_ctx *ctx, uint32_t domid, int send_fd,
                               int flags, unsigned int precopy_iterations,
                               unsigned int precopy_dirty_threshold, int recv_fd,
+                              int memory_strategy,
                               bool *postcopy_transitioned,
                               const libxl_asyncop_how *ao_how)
 {
@@ -553,7 +556,7 @@ int libxl_domain_live_migrate(libxl_ctx *ctx, uint32_t domid, int send_fd,
     flags |= LIBXL_SUSPEND_LIVE;
 
     return do_domain_suspend(ctx, domid, send_fd, flags, precopy_iterations,
-                             precopy_dirty_threshold, recv_fd,
+                             precopy_dirty_threshold, recv_fd, memory_strategy,
                              postcopy_transitioned, ao_how);
 }
 

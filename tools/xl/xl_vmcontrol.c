@@ -655,6 +655,7 @@ int create_domain(struct domain_create *dom_info)
     const char *config_source = NULL;
     const char *restore_source = NULL;
     int migrate_fd = dom_info->migrate_fd;
+    bool *postcopy_resumed = dom_info->postcopy_resumed;
     bool config_in_json;
 
     int i;
@@ -674,6 +675,9 @@ int create_domain(struct domain_create *dom_info)
     uint32_t domid_soft_reset = INVALID_DOMID;
 
     int restoring = (restore_file || (migrate_fd >= 0));
+
+    if (postcopy_resumed)
+        *postcopy_resumed = false;
 
     libxl_domain_config_init(&d_config);
 
@@ -882,8 +886,8 @@ start:
 
         ret = libxl_domain_create_restore(ctx, &d_config,
                                           &domid, restore_fd,
-                                          send_back_fd, NULL, &params,
-                                          0, autoconnect_console_how);
+                                          send_back_fd, postcopy_resumed,
+                                          &params, 0, autoconnect_console_how);
 
         libxl_domain_restore_params_dispose(&params);
 

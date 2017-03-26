@@ -48,6 +48,7 @@ struct domain_create {
     bool userspace_colo_proxy;
     int migrate_fd; /* -1 means none */
     int send_back_fd; /* -1 means none */
+    bool *postcopy_resumed;
     char **migration_domname_r; /* from malloc */
 };
 
@@ -66,7 +67,6 @@ static const char migrate_permission_to_go[]=
     "domain is yours, you are cleared to unpause";
 static const char migrate_report[]=
     "my copy unpause results are as follows";
-#endif
 
   /* followed by one byte:
    *     0: everything went well, domain is running
@@ -75,6 +75,11 @@ static const char migrate_report[]=
    *            next thing should be a migrate_permission_to_go
    *            from target to source
    */
+
+static const char migrate_postcopy_sync[]=
+    "postcopy migration completed successfully";
+
+#endif
 
 #define XL_MANDATORY_FLAG_JSON (1U << 0) /* config data is in JSON format */
 #define XL_MANDATORY_FLAG_STREAMv2 (1U << 1) /* stream is v2 */
