@@ -203,7 +203,7 @@ static int process_page_data(struct xc_sr_context *ctx, unsigned count,
                              xen_pfn_t *pfns, uint32_t *types, void *page_data)
 {
     xc_interface *xch = ctx->xch;
-    xen_pfn_t *mfns = malloc(count * sizeof(*mfns));
+    xen_pfn_t *gfns = malloc(count * sizeof(*gfns));
     int *map_errs = malloc(count * sizeof(*map_errs));
     int rc;
     void *mapping = NULL, *guest_page = NULL;
@@ -211,11 +211,11 @@ static int process_page_data(struct xc_sr_context *ctx, unsigned count,
         j,         /* j indexes the subset of pfns we decide to map. */
         nr_pages = 0;
 
-    if ( !mfns || !map_errs )
+    if ( !gfns || !map_errs )
     {
         rc = -1;
         ERROR("Failed to allocate %zu bytes to process page data",
-              count * (sizeof(*mfns) + sizeof(*map_errs)));
+              count * (sizeof(*gfns) + sizeof(*map_errs)));
         goto err;
     }
 
@@ -246,7 +246,7 @@ static int process_page_data(struct xc_sr_context *ctx, unsigned count,
         case XEN_DOMCTL_PFINFO_L4TAB:
         case XEN_DOMCTL_PFINFO_L4TAB | XEN_DOMCTL_PFINFO_LPINTAB:
 
-            mfns[nr_pages++] = ctx->restore.ops.pfn_to_gfn(ctx, pfns[i]);
+            gfns[nr_pages++] = ctx->restore.ops.pfn_to_gfn(ctx, pfns[i]);
             break;
         }
     }
@@ -257,11 +257,11 @@ static int process_page_data(struct xc_sr_context *ctx, unsigned count,
 
     mapping = guest_page = xenforeignmemory_map(xch->fmem,
         ctx->domid, PROT_READ | PROT_WRITE,
-        nr_pages, mfns, map_errs);
+        nr_pages, gfns, map_errs);
     if ( !mapping )
     {
         rc = -1;
-        PERROR("Unable to map %u mfns for %u pages of data",
+        PERROR("Unable to map %u gfns for %u pages of data",
                nr_pages, count);
         goto err;
     }
@@ -281,7 +281,7 @@ static int process_page_data(struct xc_sr_context *ctx, unsigned count,
         {
             rc = -1;
             ERROR("Mapping pfn %#"PRIpfn" (mfn %#"PRIpfn", type %#"PRIx32") failed with %d",
-                  pfns[i], mfns[j], types[i], map_errs[j]);
+                  pfns[i], gfns[j], types[i], map_errs[j]);
             goto err;
         }
 
@@ -320,7 +320,7 @@ static int process_page_data(struct xc_sr_context *ctx, unsigned count,
         xenforeignmemory_unmap(xch->fmem, mapping, nr_pages);
 
     free(map_errs);
-    free(mfns);
+    free(gfns);
 
     return rc;
 }

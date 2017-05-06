@@ -79,7 +79,7 @@ static int write_checkpoint_record(struct xc_sr_context *ctx)
 static int write_batch(struct xc_sr_context *ctx)
 {
     xc_interface *xch = ctx->xch;
-    xen_pfn_t *mfns = NULL, *types = NULL;
+    xen_pfn_t *gfns = NULL, *types = NULL;
     void *guest_mapping = NULL;
     void **guest_data = NULL;
     void **local_pages = NULL;
@@ -98,7 +98,7 @@ static int write_batch(struct xc_sr_context *ctx)
     assert(nr_pfns != 0);
 
     /* Mfns of the batch pfns. */
-    mfns = malloc(nr_pfns * sizeof(*mfns));
+    gfns = malloc(nr_pfns * sizeof(*gfns));
     /* Types of the batch pfns. */
     types = malloc(nr_pfns * sizeof(*types));
     /* Errors from attempting to map the gfns. */
@@ -110,7 +110,7 @@ static int write_batch(struct xc_sr_context *ctx)
     /* iovec[] for writev(). */
     iov = malloc((nr_pfns + 4) * sizeof(*iov));
 
-    if ( !mfns || !types || !errors || !guest_data || !local_pages || !iov )
+    if ( !gfns || !types || !errors || !guest_data || !local_pages || !iov )
     {
         ERROR("Unable to allocate arrays for a batch of %u pages",
               nr_pfns);
@@ -119,11 +119,11 @@ static int write_batch(struct xc_sr_context *ctx)
 
     for ( i = 0; i < nr_pfns; ++i )
     {
-        types[i] = mfns[i] = ctx->save.ops.pfn_to_gfn(ctx,
+        types[i] = gfns[i] = ctx->save.ops.pfn_to_gfn(ctx,
                                                       ctx->save.batch_pfns[i]);
 
         /* Likely a ballooned page. */
-        if ( mfns[i] == INVALID_MFN )
+        if ( gfns[i] == INVALID_MFN )
         {
             set_bit(ctx->save.batch_pfns[i], ctx->save.deferred_pages);
             ++ctx->save.nr_deferred_pages;
@@ -148,13 +148,13 @@ static int write_batch(struct xc_sr_context *ctx)
             continue;
         }
 
-        mfns[nr_pages++] = mfns[i];
+        gfns[nr_pages++] = gfns[i];
     }
 
     if ( nr_pages > 0 )
     {
         guest_mapping = xenforeignmemory_map(xch->fmem,
-            ctx->domid, PROT_READ, nr_pages, mfns, errors);
+            ctx->domid, PROT_READ, nr_pages, gfns, errors);
         if ( !guest_mapping )
         {
             PERROR("Failed to map guest pages");
@@ -174,8 +174,8 @@ static int write_batch(struct xc_sr_context *ctx)
 
             if ( errors[p] )
             {
-                ERROR("Mapping of pfn %#"PRIpfn" (mfn %#"PRIpfn") failed %d",
-                      ctx->save.batch_pfns[i], mfns[p], errors[p]);
+                ERROR("Mapping of pfn %#"PRIpfn" (gfn %#"PRIpfn") failed %d",
+                      ctx->save.batch_pfns[i], gfns[p], errors[p]);
                 goto err;
             }
 
@@ -271,7 +271,7 @@ static int write_batch(struct xc_sr_context *ctx)
     free(guest_data);
     free(errors);
     free(types);
-    free(mfns);
+    free(gfns);
 
     return rc;
 }
