@@ -27,6 +27,11 @@ static const uint32_t batch_rec_types[] =
     [XC_SR_SAVE_BATCH_POSTCOPY_PAGE] = REC_TYPE_POSTCOPY_PAGE_DATA
 };
 
+#include <time.h>
+
+static struct timespec migration_start;
+static struct timespec migration_suspend;
+
 /*
  * Writes an Image header and Domain header into the stream.
  */
@@ -120,6 +125,13 @@ static int write_postcopy_transition_record(struct xc_sr_context *ctx)
         { REC_TYPE_POSTCOPY_TRANSITION, 0, NULL };
 
     return write_record(ctx, ctx->fd, &postcopy_transition);
+}
+
+static int write_stop_and_copy_record(struct xc_sr_context *ctx)
+{
+    struct xc_sr_record end = { REC_TYPE_PERF_STOP_AND_COPY, 0, NULL };
+
+    return write_record(ctx, ctx->fd, &end);
 }
 
 /*
@@ -551,11 +563,16 @@ static int send_postcopy_pfns(struct xc_sr_context *ctx)
 static int suspend_domain(struct xc_sr_context *ctx)
 {
     xc_interface *xch = ctx->xch;
+    int cb_rc;
 
     /* TODO: Properly specify the return value from this callback.  All
      * implementations currently appear to return 1 for success, whereas
      * the legacy code checks for != 0. */
-    int cb_rc = ctx->save.callbacks->suspend(ctx->save.callbacks->data);
+    clock_gettime(CLOCK_MONOTONIC, &migration_suspend);
+    IPRINTF("MIGRATION SUSPEND %f\n",
+            (double)migration_suspend.tv_sec +
+            (double)migration_suspend.tv_nsec * (1.0/1000000000.0));
+    cb_rc = ctx->save.callbacks->suspend(ctx->save.callbacks->data);
 
     if ( cb_rc == 0 )
     {
@@ -1008,6 +1025,7 @@ static int send_domain_memory_live(struct xc_sr_context *ctx)
 
     if ( ctx->save.policy_decision == XGS_POLICY_STOP_AND_COPY )
     {
+        write_stop_and_copy_record(ctx);
         xc_set_progress_prefix(xch, "Final precopy iteration");
         rc = send_dirty_pages(ctx, ctx->save.nr_final_dirty_pages);
         xc_set_progress_prefix(xch, NULL);
@@ -1332,6 +1350,11 @@ static int save(struct xc_sr_context *ctx, uint16_t guest_type)
 
     IPRINTF("Saving domain %d, type %s",
             ctx->domid, dhdr_type_to_str(guest_type));
+
+    clock_gettime(CLOCK_MONOTONIC, &migration_start);
+    IPRINTF("MIGRATION START %f\n",
+            (double)migration_start.tv_sec +
+            (double)migration_start.tv_nsec * (1.0/1000000000.0));
 
     rc = setup(ctx);
     if ( rc )

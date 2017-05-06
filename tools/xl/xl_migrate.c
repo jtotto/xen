@@ -486,6 +486,13 @@ static void migrate_receive(int debug, int daemonize, int monitor,
         if (rc) goto perhaps_destroy_notify_rc;
     }
 
+    struct timespec migration_normal_resume;
+    clock_gettime(CLOCK_MONOTONIC, &migration_normal_resume);
+    fprintf(stderr, "MIGRATION NORMAL RESUME %f\n",
+            (double)migration_normal_resume.tv_sec +
+            (double)migration_normal_resume.tv_nsec * (1.0/1000000000.0));
+
+
     fprintf(stderr, "migration target: Domain started successsfully.\n");
     rc = 0;
 

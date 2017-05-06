@@ -1701,6 +1701,8 @@ static void domcreate_destruction_cb(libxl__egc *egc,
     domcreate_report_result(egc, dcs, ERROR_FAIL);
 }
 
+static struct timespec migration_resume;
+
 static void domcreate_report_result(libxl__egc *egc,
                                     libxl__domain_create_state *dcs,
                                     int rc)
@@ -1720,6 +1722,10 @@ static void domcreate_report_result(libxl__egc *egc,
         case DCS_POSTCOPY_STREAM_INPROGRESS:
         case DCS_POSTCOPY_STREAM_SUCCESS:
             /* If we haven't yet failed, try to unpause the guest. */
+            clock_gettime(CLOCK_MONOTONIC, &migration_resume);
+            LOG(INFO, "MIGRATION POSTCOPY RESUME %f\n",
+                    (double)migration_resume.tv_sec +
+                    (double)migration_resume.tv_nsec * (1.0/1000000000.0));
             rc = rc ?: libxl_domain_unpause(CTX, dcs->guest_domid);
             if (dcs->postcopy_resumed)
                 *dcs->postcopy_resumed = !rc;

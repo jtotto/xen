@@ -83,6 +83,7 @@ struct xc_sr_rhdr
 #define REC_TYPE_POSTCOPY_PAGE_DATA         0x00000014U
 #define REC_TYPE_POSTCOPY_FAULT             0x00000015U
 #define REC_TYPE_POSTCOPY_COMPLETE          0x00000016U
+#define REC_TYPE_PERF_STOP_AND_COPY         0x00000017U
 
 #define REC_TYPE_OPTIONAL             0x80000000U
 

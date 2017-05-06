@@ -5,6 +5,11 @@
 
 #include "xc_sr_common.h"
 
+#include <time.h>
+
+static struct timespec migration_suspend;
+static struct timespec migration_postcopy_complete;
+
 /*
  * Read and validate the Image and Domain headers.
  */
@@ -1159,7 +1164,13 @@ static int handle_postcopy_paging_requests(struct xc_sr_context *ctx)
 
 static int write_postcopy_complete_record(struct xc_sr_context *ctx)
 {
+    xc_interface *xch = ctx->xch;
     struct xc_sr_record rec = { REC_TYPE_POSTCOPY_COMPLETE };
+
+    clock_gettime(CLOCK_MONOTONIC, &migration_postcopy_complete);
+    IPRINTF("MIGRATION POSTCOPY COMPLETE %f\n",
+            (double)migration_postcopy_complete.tv_sec +
+            (double)migration_postcopy_complete.tv_nsec * (1.0/1000000000.0));
 
     return write_record(ctx, ctx->restore.send_back_fd, &rec);
 }
@@ -1516,6 +1527,13 @@ static int process_record(struct xc_sr_context *ctx, struct xc_sr_record *rec)
     case REC_TYPE_END:
         break;
 
+    case REC_TYPE_PERF_STOP_AND_COPY:
+        clock_gettime(CLOCK_MONOTONIC, &migration_suspend);
+        IPRINTF("MIGRATION RECEIVE PRECOPY SUSPEND %f\n",
+                (double)migration_suspend.tv_sec +
+                (double)migration_suspend.tv_nsec * (1.0/1000000000.0));
+        break;
+
     case REC_TYPE_PAGE_DATA:
         rc = handle_page_data(ctx, rec);
         break;
@@ -1530,6 +1548,10 @@ static int process_record(struct xc_sr_context *ctx, struct xc_sr_record *rec)
         break;
 
     case REC_TYPE_POSTCOPY_BEGIN:
+        clock_gettime(CLOCK_MONOTONIC, &migration_suspend);
+        IPRINTF("MIGRATION RECEIVE POSTCOPY SUSPEND %f\n",
+                (double)migration_suspend.tv_sec +
+                (double)migration_suspend.tv_nsec * (1.0/1000000000.0));
         if ( ctx->restore.postcopy )
             rc = -1;
         else
@@ -1705,6 +1727,14 @@ static int restore(struct xc_sr_context *ctx)
             goto err;
 
         goto done;
+    }
+    else
+    {
+        struct timespec migration_normal_resume;
+		clock_gettime(CLOCK_MONOTONIC, &migration_normal_resume);
+		IPRINTF("MIGRATION NORMAL RESUME %f\n",
+				(double)migration_normal_resume.tv_sec +
+				(double)migration_normal_resume.tv_nsec * (1.0/1000000000.0));
     }
 
     /*
