@@ -332,7 +332,7 @@ static int process_page_data(struct xc_sr_context *ctx, unsigned count,
 static int handle_page_data(struct xc_sr_context *ctx, struct xc_sr_record *rec)
 {
     xc_interface *xch = ctx->xch;
-    struct xc_sr_rec_page_data_header *pages = rec->data;
+    struct xc_sr_rec_pages_header *pages = rec->data;
     unsigned i, pages_of_data = 0;
     int rc = -1;
 
@@ -368,14 +368,14 @@ static int handle_page_data(struct xc_sr_context *ctx, struct xc_sr_record *rec)
 
     for ( i = 0; i < pages->count; ++i )
     {
-        pfn = pages->pfn[i] & PAGE_DATA_PFN_MASK;
+        pfn = pages->pfn[i] & REC_PFINFO_PFN_MASK;
         if ( !ctx->restore.ops.pfn_is_valid(ctx, pfn) )
         {
             ERROR("pfn %#"PRIpfn" (index %u) outside domain maximum", pfn, i);
             goto err;
         }
 
-        type = (pages->pfn[i] & PAGE_DATA_TYPE_MASK) >> 32;
+        type = (pages->pfn[i] & REC_PFINFO_TYPE_MASK) >> 32;
         if ( ((type >> XEN_DOMCTL_PFINFO_LTAB_SHIFT) >= 5) &&
              ((type >> XEN_DOMCTL_PFINFO_LTAB_SHIFT) <= 8) )
         {

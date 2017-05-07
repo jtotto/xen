@@ -146,7 +146,7 @@ static void __attribute__((unused)) build_assertions(void)
     BUILD_BUG_ON(sizeof(struct xc_sr_dhdr) != 16);
     BUILD_BUG_ON(sizeof(struct xc_sr_rhdr) != 8);
 
-    BUILD_BUG_ON(sizeof(struct xc_sr_rec_page_data_header)  != 8);
+    BUILD_BUG_ON(sizeof(struct xc_sr_rec_pages_header)      != 8);
     BUILD_BUG_ON(sizeof(struct xc_sr_rec_x86_pv_info)       != 8);
     BUILD_BUG_ON(sizeof(struct xc_sr_rec_x86_pv_p2m_frames) != 8);
     BUILD_BUG_ON(sizeof(struct xc_sr_rec_x86_pv_vcpu_hdr)   != 8);
