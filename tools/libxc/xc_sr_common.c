@@ -140,6 +140,42 @@ int read_record(struct xc_sr_context *ctx, int fd, struct xc_sr_record *rec)
     return 0;
 };
 
+int validate_pages_record(struct xc_sr_context *ctx, struct xc_sr_record *rec,
+                          uint32_t expected_type)
+{
+    xc_interface *xch = ctx->xch;
+    struct xc_sr_rec_pages_header *pages = rec->data;
+
+    if ( rec->type != expected_type )
+    {
+        ERROR("%s record type expected, instead received record of type "
+              "%08x (%s)", rec_type_to_str(expected_type), rec->type,
+              rec_type_to_str(rec->type));
+        return -1;
+    }
+    else if ( rec->length < sizeof(*pages) )
+    {
+        ERROR("%s record truncated: length %u, min %zu",
+              rec_type_to_str(rec->type), rec->length, sizeof(*pages));
+        return -1;
+    }
+    else if ( pages->count < 1 )
+    {
+        ERROR("Expected at least 1 pfn in %s record",
+              rec_type_to_str(rec->type));
+        return -1;
+    }
+    else if ( rec->length < sizeof(*pages) + (pages->count * sizeof(uint64_t)) )
+    {
+        ERROR("%s record (length %u) too short to contain %u"
+              " pfns worth of information", rec_type_to_str(rec->type),
+              rec->length, pages->count);
+        return -1;
+    }
+
+    return 0;
+}
+
 static void __attribute__((unused)) build_assertions(void)
 {
     BUILD_BUG_ON(sizeof(struct xc_sr_ihdr) != 24);

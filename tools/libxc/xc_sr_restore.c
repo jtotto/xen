@@ -326,45 +326,21 @@ static int process_page_data(struct xc_sr_context *ctx, unsigned count,
 }
 
 /*
- * Validate a PAGE_DATA record from the stream, and pass the results to
- * process_page_data() to actually perform the legwork.
+ * Given a PAGE_DATA record, decode each packed entry into its encoded pfn and
+ * type, storing the results in the pfns and types buffers.
+ *
+ * Returns the number of pages of real data, or < 0 on error.
  */
-static int handle_page_data(struct xc_sr_context *ctx, struct xc_sr_record *rec)
+static int decode_pages_record(struct xc_sr_context *ctx,
+                               struct xc_sr_rec_pages_header *pages,
+                               /* OUT */ xen_pfn_t *pfns,
+                               /* OUT */ uint32_t *types)
 {
     xc_interface *xch = ctx->xch;
-    struct xc_sr_rec_pages_header *pages = rec->data;
-    unsigned i, pages_of_data = 0;
-    int rc = -1;
-
-    xen_pfn_t *pfns = NULL, pfn;
-    uint32_t *types = NULL, type;
-
-    if ( rec->length < sizeof(*pages) )
-    {
-        ERROR("PAGE_DATA record truncated: length %u, min %zu",
-              rec->length, sizeof(*pages));
-        goto err;
-    }
-    else if ( pages->count < 1 )
-    {
-        ERROR("Expected at least 1 pfn in PAGE_DATA record");
-        goto err;
-    }
-    else if ( rec->length < sizeof(*pages) + (pages->count * sizeof(uint64_t)) )
-    {
-        ERROR("PAGE_DATA record (length %u) too short to contain %u"
-              " pfns worth of information", rec->length, pages->count);
-        goto err;
-    }
-
-    pfns = malloc(pages->count * sizeof(*pfns));
-    types = malloc(pages->count * sizeof(*types));
-    if ( !pfns || !types )
-    {
-        ERROR("Unable to allocate enough memory for %u pfns",
-              pages->count);
-        goto err;
-    }
+    unsigned int i;
+    int pages_of_data = 0;
+    xen_pfn_t pfn;
+    uint32_t type;
 
     for ( i = 0; i < pages->count; ++i )
     {
@@ -384,13 +360,50 @@ static int handle_page_data(struct xc_sr_context *ctx, struct xc_sr_record *rec)
             goto err;
         }
         else if ( type < XEN_DOMCTL_PFINFO_BROKEN )
-            /* NOTAB and all L1 through L4 tables (including pinned) should
-             * have a page worth of data in the record. */
+            /* NOTAB and all L1 through L4 tables (including pinned) require the
+             * migration of a page of real data. */
             pages_of_data++;
 
         pfns[i] = pfn;
         types[i] = type;
     }
+
+    return pages_of_data;
+
+ err:
+    return -1;
+}
+
+/*
+ * Validate a PAGE_DATA record from the stream, and pass the results to
+ * process_page_data() to actually perform the legwork.
+ */
+static int handle_page_data(struct xc_sr_context *ctx, struct xc_sr_record *rec)
+{
+    xc_interface *xch = ctx->xch;
+    struct xc_sr_rec_pages_header *pages = rec->data;
+    int pages_of_data;
+    int rc = -1;
+
+    xen_pfn_t *pfns = NULL;
+    uint32_t *types = NULL;
+
+    rc = validate_pages_record(ctx, rec, REC_TYPE_PAGE_DATA);
+    if ( rc )
+        goto err;
+
+    pfns = malloc(pages->count * sizeof(*pfns));
+    types = malloc(pages->count * sizeof(*types));
+    if ( !pfns || !types )
+    {
+        ERROR("Unable to allocate enough memory for %u pfns",
+              pages->count);
+        goto err;
+    }
+
+    pages_of_data = decode_pages_record(ctx, pages, pfns, types);
+    if ( pages_of_data < 0 )
+        goto err;
 
     if ( rec->length != (sizeof(*pages) +
                          (sizeof(uint64_t) * pages->count) +
