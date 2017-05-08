@@ -22,16 +22,9 @@
 #ifndef XENGUEST_H
 #define XENGUEST_H
 
+#include <stdbool.h>
+
 #define XC_NUMA_NO_NODE   (~0U)
-
-#define XCFLAGS_LIVE      (1 << 0)
-#define XCFLAGS_DEBUG     (1 << 1)
-#define XCFLAGS_HVM       (1 << 2)
-#define XCFLAGS_STDVGA    (1 << 3)
-#define XCFLAGS_CHECKPOINT_COMPRESS    (1 << 4)
-
-#define X86_64_B_SIZE   64 
-#define X86_32_B_SIZE   32
 
 /*
  * User not using xc_suspend_* / xc_await_suspent may not want to
@@ -90,20 +83,26 @@ typedef enum {
     XC_MIG_STREAM_COLO,
 } xc_migration_stream_t;
 
+struct domain_save_params {
+    uint32_t dom;       /* the id of the domain */
+    int save_fd;        /* the fd to save the domain to */
+    int recv_fd;        /* the fd to receive live protocol responses */
+    uint32_t max_iters; /* how many precopy iterations before we give up? */
+    bool live;          /* is this a live migration? */
+    bool debug;         /* are we in debug mode? */
+    xc_migration_stream_t stream_type; /* is there checkpointing involved? */
+};
+
 /**
  * This function will save a running domain.
  *
  * @parm xch a handle to an open hypervisor interface
- * @parm fd the file descriptor to save a domain to
- * @parm dom the id of the domain
- * @param stream_type XC_MIG_STREAM_NONE if the far end of the stream
- *        doesn't use checkpointing
+ * @parm params a description of the requested save/migration
+ * @parm callbacks hooks for delegated steps of the save procedure
  * @return 0 on success, -1 on failure
  */
-int xc_domain_save(xc_interface *xch, int io_fd, uint32_t dom, uint32_t max_iters,
-                   uint32_t max_factor, uint32_t flags /* XCFLAGS_xxx */,
-                   struct save_callbacks* callbacks, int hvm,
-                   xc_migration_stream_t stream_type, int recv_fd);
+int xc_domain_save(xc_interface *xch, const struct domain_save_params *params,
+                   const struct save_callbacks *callbacks);
 
 /* callbacks provided by xc_domain_restore */
 struct restore_callbacks {
@@ -145,31 +144,32 @@ struct restore_callbacks {
     void* data;
 };
 
+struct domain_restore_params {
+    uint32_t dom;                 /* the id of the domain */
+    int recv_fd;                  /* the fd to restore the domain from */
+    int send_back_fd;             /* the fd to send live protocol responses */
+    unsigned int store_evtchn;    /* the store event channel */
+    xen_pfn_t *store_gfn;         /* OUT - the gfn of the store page */
+    domid_t store_domid;          /* the store domain id */
+    unsigned int console_evtchn;  /* the console event channel */
+    xen_pfn_t *console_gfn;       /* OUT - the gfn of the console page */
+    domid_t console_domid;        /* the console domain id */
+    xc_migration_stream_t stream_type; /* is there checkpointing involved? */
+};
+
 /**
  * This function will restore a saved domain.
  *
  * Domain is restored in a suspended state ready to be unpaused.
  *
  * @parm xch a handle to an open hypervisor interface
- * @parm fd the file descriptor to restore a domain from
- * @parm dom the id of the domain
- * @parm store_evtchn the store event channel for this domain to use
- * @parm store_mfn returned with the mfn of the store page
- * @parm hvm non-zero if this is a HVM restore
- * @parm pae non-zero if this HVM domain has PAE support enabled
- * @parm superpages non-zero to allocate guest memory with superpages
- * @parm stream_type non-zero if the far end of the stream is using checkpointing
- * @parm callbacks non-NULL to receive a callback to restore toolstack
- *       specific data
+ * @parm params a description of the requested restore operation
+ * @parm callbacks hooks for delegated steps of the restore procedure
  * @return 0 on success, -1 on failure
  */
-int xc_domain_restore(xc_interface *xch, int io_fd, uint32_t dom,
-                      unsigned int store_evtchn, unsigned long *store_mfn,
-                      domid_t store_domid, unsigned int console_evtchn,
-                      unsigned long *console_mfn, domid_t console_domid,
-                      unsigned int hvm, unsigned int pae, int superpages,
-                      xc_migration_stream_t stream_type,
-                      struct restore_callbacks *callbacks, int send_back_fd);
+int xc_domain_restore(xc_interface *xch,
+                      const struct domain_restore_params *params,
+                      const struct restore_callbacks *callbacks);
 
 /**
  * This function will create a domain for a paravirtualized Linux

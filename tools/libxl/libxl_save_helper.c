@@ -239,7 +239,6 @@ static struct restore_callbacks helper_restore_callbacks;
 int main(int argc, char **argv)
 {
     int r;
-    int send_back_fd, recv_fd;
 
 #define NEXTARG (++argv, assert(*argv), *argv)
 
@@ -248,15 +247,15 @@ int main(int argc, char **argv)
 
     if (!strcmp(mode,"--save-domain")) {
 
-        io_fd =                             atoi(NEXTARG);
-        recv_fd =                           atoi(NEXTARG);
-        uint32_t dom =                      strtoul(NEXTARG,0,10);
-        uint32_t max_iters =                strtoul(NEXTARG,0,10);
-        uint32_t max_factor =               strtoul(NEXTARG,0,10);
-        uint32_t flags =                    strtoul(NEXTARG,0,10);
-        int hvm =                           atoi(NEXTARG);
-        unsigned cbflags =                  strtoul(NEXTARG,0,10);
-        xc_migration_stream_t stream_type = strtoul(NEXTARG,0,10);
+        struct domain_save_params params;
+        params.save_fd = io_fd = atoi(NEXTARG);
+        params.recv_fd =         atoi(NEXTARG);
+        params.dom =             strtoul(NEXTARG,0,10);
+        params.max_iters =       strtoul(NEXTARG,0,10);
+        params.live =            strtoul(NEXTARG,0,10);
+        params.debug =           strtoul(NEXTARG,0,10);
+        params.stream_type =     strtoul(NEXTARG,0,10);
+        unsigned cbflags =       strtoul(NEXTARG,0,10);
         assert(!*++argv);
 
         helper_setcallbacks_save(&helper_save_callbacks, cbflags);
@@ -264,41 +263,35 @@ int main(int argc, char **argv)
         startup("save");
         setup_signals(save_signal_handler);
 
-        r = xc_domain_save(xch, io_fd, dom, max_iters, max_factor, flags,
-                           &helper_save_callbacks, hvm, stream_type,
-                           recv_fd);
+        r = xc_domain_save(xch, &params, &helper_save_callbacks);
         complete(r);
 
     } else if (!strcmp(mode,"--restore-domain")) {
 
-        io_fd =                             atoi(NEXTARG);
-        send_back_fd =                      atoi(NEXTARG);
-        uint32_t dom =                      strtoul(NEXTARG,0,10);
-        unsigned store_evtchn =             strtoul(NEXTARG,0,10);
-        domid_t store_domid =               strtoul(NEXTARG,0,10);
-        unsigned console_evtchn =           strtoul(NEXTARG,0,10);
-        domid_t console_domid =             strtoul(NEXTARG,0,10);
-        unsigned int hvm =                  strtoul(NEXTARG,0,10);
-        unsigned int pae =                  strtoul(NEXTARG,0,10);
-        int superpages =                    strtoul(NEXTARG,0,10);
-        unsigned cbflags =                  strtoul(NEXTARG,0,10);
-        xc_migration_stream_t stream_type = strtoul(NEXTARG,0,10);
+        xen_pfn_t store_gfn = 0;
+        xen_pfn_t console_gfn = 0;
+
+        struct domain_restore_params params;
+        params.recv_fd = io_fd = atoi(NEXTARG);
+        params.send_back_fd =    atoi(NEXTARG);
+        params.dom =             strtoul(NEXTARG,0,10);
+        params.store_evtchn =    strtoul(NEXTARG,0,10);
+        params.store_gfn =       &store_gfn;
+        params.store_domid =     strtoul(NEXTARG,0,10);
+        params.console_evtchn =  strtoul(NEXTARG,0,10);
+        params.console_gfn =     &console_gfn;
+        params.console_domid =   strtoul(NEXTARG,0,10);
+        params.stream_type =     strtoul(NEXTARG,0,10);
+        unsigned cbflags =       strtoul(NEXTARG,0,10);
         assert(!*++argv);
 
         helper_setcallbacks_restore(&helper_restore_callbacks, cbflags);
 
-        unsigned long store_mfn = 0;
-        unsigned long console_mfn = 0;
-
         startup("restore");
         setup_signals(SIG_DFL);
 
-        r = xc_domain_restore(xch, io_fd, dom, store_evtchn, &store_mfn,
-                              store_domid, console_evtchn, &console_mfn,
-                              console_domid, hvm, pae, superpages,
-                              stream_type,
-                              &helper_restore_callbacks, send_back_fd);
-        helper_stub_restore_results(store_mfn,console_mfn,0);
+        r = xc_domain_restore(xch, &params, &helper_restore_callbacks);
+        helper_stub_restore_results(store_gfn, console_gfn, 0);
         complete(r);
 
     } else {

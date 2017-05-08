@@ -338,8 +338,6 @@ void libxl__domain_save(libxl__egc *egc, libxl__domain_save_state *dss)
     /* Convenience aliases */
     const uint32_t domid = dss->domid;
     const libxl_domain_type type = dss->type;
-    const int live = dss->live;
-    const int debug = dss->debug;
     const libxl_domain_remus_info *const r_info = dss->remus;
     libxl__srm_save_autogen_callbacks *const callbacks =
         &dss->sws.shs.callbacks.save.a;
@@ -374,10 +372,6 @@ void libxl__domain_save(libxl__egc *egc, libxl__domain_save_state *dss)
         abort();
     }
 
-    dss->xcflags = (live ? XCFLAGS_LIVE : 0)
-          | (debug ? XCFLAGS_DEBUG : 0)
-          | (dss->hvm ? XCFLAGS_HVM : 0);
-
     /* Disallow saving a guest with vNUMA configured because migration
      * stream does not preserve node information.
      *
@@ -391,11 +385,6 @@ void libxl__domain_save(libxl__egc *egc, libxl__domain_save_state *dss)
         LOGD(ERROR, domid, "Cannot save a guest with vNUMA configured");
         rc = ERROR_FAIL;
         goto out;
-    }
-
-    if (dss->checkpointed_stream == LIBXL_CHECKPOINTED_STREAM_REMUS) {
-        if (libxl_defbool_val(r_info->compression))
-            dss->xcflags |= XCFLAGS_CHECKPOINT_COMPRESS;
     }
 
     if (dss->checkpointed_stream == LIBXL_CHECKPOINTED_STREAM_NONE)

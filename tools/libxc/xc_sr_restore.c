@@ -817,32 +817,28 @@ static int restore(struct xc_sr_context *ctx)
     return rc;
 }
 
-int xc_domain_restore(xc_interface *xch, int io_fd, uint32_t dom,
-                      unsigned int store_evtchn, unsigned long *store_mfn,
-                      domid_t store_domid, unsigned int console_evtchn,
-                      unsigned long *console_gfn, domid_t console_domid,
-                      unsigned int hvm, unsigned int pae, int superpages,
-                      xc_migration_stream_t stream_type,
-                      struct restore_callbacks *callbacks, int send_back_fd)
+int xc_domain_restore(xc_interface *xch,
+                      const struct domain_restore_params *params,
+                      const struct restore_callbacks *callbacks)
 {
     xen_pfn_t nr_pfns;
     struct xc_sr_context ctx =
         {
             .xch = xch,
-            .fd = io_fd,
+            .fd = params->recv_fd,
         };
 
     /* GCC 4.4 (of CentOS 6.x vintage) can' t initialise anonymous unions. */
-    ctx.restore.console_evtchn = console_evtchn;
-    ctx.restore.console_domid = console_domid;
-    ctx.restore.xenstore_evtchn = store_evtchn;
-    ctx.restore.xenstore_domid = store_domid;
-    ctx.restore.checkpointed = stream_type;
+    ctx.restore.console_evtchn = params->console_evtchn;
+    ctx.restore.console_domid = params->console_domid;
+    ctx.restore.xenstore_evtchn = params->store_evtchn;
+    ctx.restore.xenstore_domid = params->store_domid;
+    ctx.restore.checkpointed = params->stream_type;
     ctx.restore.callbacks = callbacks;
-    ctx.restore.send_back_fd = send_back_fd;
+    ctx.restore.send_back_fd = params->send_back_fd;
 
     /* Sanity checks for callbacks. */
-    if ( stream_type )
+    if ( params->stream_type )
         assert(callbacks->checkpoint);
 
     if ( ctx.restore.checkpointed == XC_MIG_STREAM_COLO )
@@ -854,28 +850,27 @@ int xc_domain_restore(xc_interface *xch, int io_fd, uint32_t dom,
                callbacks->restore_results);
     }
 
-    DPRINTF("fd %d, dom %u, hvm %u, pae %u, superpages %d"
-            ", stream_type %d", io_fd, dom, hvm, pae,
-            superpages, stream_type);
-
-    if ( xc_domain_getinfo(xch, dom, 1, &ctx.dominfo) != 1 )
+    if ( xc_domain_getinfo(xch, params->dom, 1, &ctx.dominfo) != 1 )
     {
         PERROR("Failed to get domain info");
         return -1;
     }
 
-    if ( ctx.dominfo.domid != dom )
+    if ( ctx.dominfo.domid != params->dom )
     {
-        ERROR("Domain %u does not exist", dom);
+        ERROR("Domain %u does not exist", params->dom);
         return -1;
     }
 
-    ctx.domid = dom;
+    DPRINTF("fd %d, dom %u, hvm %d, stream_type %d", params->recv_fd,
+            params->dom, ctx.dominfo.hvm, params->stream_type);
+
+    ctx.domid = params->dom;
 
     if ( read_headers(&ctx) )
         return -1;
 
-    if ( xc_domain_nr_gpfns(xch, dom, &nr_pfns) < 0 )
+    if ( xc_domain_nr_gpfns(xch, ctx.domid, &nr_pfns) < 0 )
     {
         PERROR("Unable to obtain the guest p2m size");
         return -1;
@@ -906,8 +901,8 @@ int xc_domain_restore(xc_interface *xch, int io_fd, uint32_t dom,
             ctx.restore.console_domid,
             ctx.restore.console_evtchn);
 
-    *console_gfn = ctx.restore.console_gfn;
-    *store_mfn = ctx.restore.xenstore_gfn;
+    *params->console_gfn = ctx.restore.console_gfn;
+    *params->store_gfn = ctx.restore.xenstore_gfn;
 
     return 0;
 }

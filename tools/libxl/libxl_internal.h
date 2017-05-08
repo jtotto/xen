@@ -3306,7 +3306,6 @@ struct libxl__domain_save_state {
     /* private */
     int rc;
     int hvm;
-    int xcflags;
     libxl__domain_suspend_state dsps;
     union {
         /* for Remus */

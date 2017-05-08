@@ -187,7 +187,7 @@ struct xc_sr_context
             int recv_fd;
 
             struct xc_sr_save_ops ops;
-            struct save_callbacks *callbacks;
+            const struct save_callbacks *callbacks;
 
             /* Live migrate vs non live suspend. */
             bool live;
@@ -214,7 +214,7 @@ struct xc_sr_context
         struct /* Restore data. */
         {
             struct xc_sr_restore_ops ops;
-            struct restore_callbacks *callbacks;
+            const struct restore_callbacks *callbacks;
 
             int send_back_fd;
             unsigned long p2m_size;

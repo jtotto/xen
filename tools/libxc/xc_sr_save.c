@@ -915,28 +915,26 @@ static int save(struct xc_sr_context *ctx, uint16_t guest_type)
     return rc;
 };
 
-int xc_domain_save(xc_interface *xch, int io_fd, uint32_t dom,
-                   uint32_t max_iters, uint32_t max_factor, uint32_t flags,
-                   struct save_callbacks* callbacks, int hvm,
-                   xc_migration_stream_t stream_type, int recv_fd)
+int xc_domain_save(xc_interface *xch, const struct domain_save_params *params,
+                   const struct save_callbacks* callbacks)
 {
     struct xc_sr_context ctx =
         {
             .xch = xch,
-            .fd = io_fd,
+            .fd = params->save_fd,
         };
 
     /* GCC 4.4 (of CentOS 6.x vintage) can' t initialise anonymous unions. */
     ctx.save.callbacks = callbacks;
-    ctx.save.live  = !!(flags & XCFLAGS_LIVE);
-    ctx.save.debug = !!(flags & XCFLAGS_DEBUG);
-    ctx.save.checkpointed = stream_type;
-    ctx.save.recv_fd = recv_fd;
+    ctx.save.live  = params->live;
+    ctx.save.debug = params->debug;
+    ctx.save.checkpointed = params->stream_type;
+    ctx.save.recv_fd = params->recv_fd;
 
     /* If altering migration_stream update this assert too. */
-    assert(stream_type == XC_MIG_STREAM_NONE ||
-           stream_type == XC_MIG_STREAM_REMUS ||
-           stream_type == XC_MIG_STREAM_COLO);
+    assert(params->stream_type == XC_MIG_STREAM_NONE ||
+           params->stream_type == XC_MIG_STREAM_REMUS ||
+           params->stream_type == XC_MIG_STREAM_COLO);
 
     /*
      * TODO: Find some time to better tweak the live migration algorithm.
@@ -947,30 +945,32 @@ int xc_domain_save(xc_interface *xch, int io_fd, uint32_t dom,
     ctx.save.max_iterations = 5;
     ctx.save.dirty_threshold = 50;
 
+    if ( xc_domain_getinfo(xch, params->dom, 1, &ctx.dominfo) != 1 )
+    {
+        PERROR("Failed to get domain info");
+        return -1;
+    }
+
+    if ( ctx.dominfo.domid != params->dom )
+    {
+        ERROR("Domain %u does not exist", params->dom);
+        return -1;
+    }
+
     /* Sanity checks for callbacks. */
-    if ( hvm )
+    if ( ctx.dominfo.hvm )
         assert(callbacks->switch_qemu_logdirty);
     if ( ctx.save.checkpointed )
         assert(callbacks->checkpoint && callbacks->aftercopy);
     if ( ctx.save.checkpointed == XC_MIG_STREAM_COLO )
         assert(callbacks->wait_checkpoint);
 
-    DPRINTF("fd %d, dom %u, max_iters %u, max_factor %u, flags %u, hvm %d",
-            io_fd, dom, max_iters, max_factor, flags, hvm);
+    ctx.domid = params->dom;
 
-    if ( xc_domain_getinfo(xch, dom, 1, &ctx.dominfo) != 1 )
-    {
-        PERROR("Failed to get domain info");
-        return -1;
-    }
-
-    if ( ctx.dominfo.domid != dom )
-    {
-        ERROR("Domain %u does not exist", dom);
-        return -1;
-    }
-
-    ctx.domid = dom;
+    DPRINTF("fd %d, dom %u, max_iterations %u, dirty_threshold %u, live %d, "
+            "debug %d, type %d, hvm %d", ctx.fd, ctx.domid,
+            ctx.save.max_iterations, ctx.save.dirty_threshold, ctx.save.live,
+            ctx.save.debug, ctx.save.checkpointed, ctx.dominfo.hvm);
 
     if ( ctx.dominfo.hvm )
     {
