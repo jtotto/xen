@@ -328,6 +328,28 @@ int libxl__save_emulator_xenstore_data(libxl__domain_save_state *dss,
     return rc;
 }
 
+/*
+ * This is the live migration precopy policy - it's called periodically during
+ * the precopy phase of live migrations, and is responsible for deciding when
+ * the precopy phase should terminate and what should be done next.
+ *
+ * The policy implemented here behaves identically to the policy previously
+ * hard-coded into xc_domain_save() - it proceeds to the stop-and-copy phase of
+ * the live migration when there are either fewer than 50 dirty pages, or more
+ * than 5 precopy rounds have completed.
+ */
+static int libxl__save_live_migration_precopy_policy(
+    struct precopy_stats stats, void *user)
+{
+    if (stats.dirty_count >= 0 && stats.dirty_count < 50)
+        return XGS_POLICY_STOP_AND_COPY;
+
+    if (stats.iteration >= 5)
+        return XGS_POLICY_STOP_AND_COPY;
+
+    return XGS_POLICY_CONTINUE_PRECOPY;
+}
+
 /*----- main code for saving, in order of execution -----*/
 
 void libxl__domain_save(libxl__egc *egc, libxl__domain_save_state *dss)
@@ -390,6 +412,7 @@ void libxl__domain_save(libxl__egc *egc, libxl__domain_save_state *dss)
     if (dss->checkpointed_stream == LIBXL_CHECKPOINTED_STREAM_NONE)
         callbacks->suspend = libxl__domain_suspend_callback;
 
+    callbacks->precopy_policy = libxl__save_live_migration_precopy_policy;
     callbacks->switch_qemu_logdirty = libxl__domain_suspend_common_switch_qemu_logdirty;
 
     dss->sws.ao  = dss->ao;

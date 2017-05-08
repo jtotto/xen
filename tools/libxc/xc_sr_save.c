@@ -1001,17 +1001,6 @@ static int save(struct xc_sr_context *ctx, uint16_t guest_type)
     return rc;
 };
 
-static int simple_precopy_policy(struct precopy_stats stats, void *user)
-{
-    if (stats.dirty_count >= 0 && stats.dirty_count < 50)
-        return XGS_POLICY_STOP_AND_COPY;
-
-    if (stats.iteration >= 5)
-        return XGS_POLICY_STOP_AND_COPY;
-
-    return XGS_POLICY_CONTINUE_PRECOPY;
-}
-
 int xc_domain_save(xc_interface *xch, const struct domain_save_params *params,
                    const struct save_callbacks* callbacks)
 {
@@ -1021,12 +1010,8 @@ int xc_domain_save(xc_interface *xch, const struct domain_save_params *params,
             .fd = params->save_fd,
         };
 
-    /* XXX use this to shim our precopy_policy in before moving it to libxl */
-    struct save_callbacks overridden_callbacks = *callbacks;
-    overridden_callbacks.precopy_policy = simple_precopy_policy;
-
     /* GCC 4.4 (of CentOS 6.x vintage) can' t initialise anonymous unions. */
-    ctx.save.callbacks = &overridden_callbacks;
+    ctx.save.callbacks = callbacks;
     ctx.save.live  = params->live;
     ctx.save.debug = params->debug;
     ctx.save.checkpointed = params->stream_type;
