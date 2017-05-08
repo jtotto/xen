@@ -198,11 +198,15 @@ struct xc_sr_context
             /* Further debugging information in the stream. */
             bool debug;
 
-            /* Parameters for tweaking live migration. */
-            unsigned max_iterations;
-            unsigned dirty_threshold;
-
             unsigned long p2m_size;
+
+            enum {
+                XC_SAVE_PHASE_PRECOPY,
+                XC_SAVE_PHASE_STOP_AND_COPY
+            } phase;
+
+            struct precopy_stats stats;
+            int policy_decision;
 
             xen_pfn_t *batch_pfns;
             unsigned nr_batch_pfns;

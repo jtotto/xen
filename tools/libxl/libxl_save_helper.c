@@ -251,7 +251,6 @@ int main(int argc, char **argv)
         params.save_fd = io_fd = atoi(NEXTARG);
         params.recv_fd =         atoi(NEXTARG);
         params.dom =             strtoul(NEXTARG,0,10);
-        params.max_iters =       strtoul(NEXTARG,0,10);
         params.live =            strtoul(NEXTARG,0,10);
         params.debug =           strtoul(NEXTARG,0,10);
         params.stream_type =     strtoul(NEXTARG,0,10);

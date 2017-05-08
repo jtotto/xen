@@ -32,12 +32,31 @@
  */
 struct xenevtchn_handle;
 
+/* For save's precopy_policy(). */
+struct precopy_stats
+{
+    unsigned int iteration;
+    unsigned int total_written;
+    int dirty_count; /* -1 if unknown */
+};
+
 /* callbacks provided by xc_domain_save */
 struct save_callbacks {
     /* Called after expiration of checkpoint interval,
      * to suspend the guest.
      */
     int (*suspend)(void* data);
+
+    /* Called after every batch of page data sent during the precopy phase of a
+     * live migration to ask the caller what to do next based on the current
+     * state of the precopy migration.
+     */
+#define XGS_POLICY_ABORT          (-1) /* Abandon the migration entirely and
+                                        * tidy up. */
+#define XGS_POLICY_CONTINUE_PRECOPY 0  /* Remain in the precopy phase. */
+#define XGS_POLICY_STOP_AND_COPY    1  /* Immediately suspend and transmit the
+                                        * remaining dirty pages. */
+    int (*precopy_policy)(struct precopy_stats stats, void *data);
 
     /* Called after the guest's dirty pages have been
      *  copied into an output buffer.
@@ -87,7 +106,6 @@ struct domain_save_params {
     uint32_t dom;       /* the id of the domain */
     int save_fd;        /* the fd to save the domain to */
     int recv_fd;        /* the fd to receive live protocol responses */
-    uint32_t max_iters; /* how many precopy iterations before we give up? */
     bool live;          /* is this a live migration? */
     bool debug;         /* are we in debug mode? */
     xc_migration_stream_t stream_type; /* is there checkpointing involved? */

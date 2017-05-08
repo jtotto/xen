@@ -277,13 +277,29 @@ static int write_batch(struct xc_sr_context *ctx)
 }
 
 /*
+ * Test if the batch is full.
+ */
+static bool batch_full(const struct xc_sr_context *ctx)
+{
+    return ctx->save.nr_batch_pfns == MAX_BATCH_SIZE;
+}
+
+/*
+ * Test if the batch is empty.
+ */
+static bool batch_empty(struct xc_sr_context *ctx)
+{
+    return ctx->save.nr_batch_pfns == 0;
+}
+
+/*
  * Flush a batch of pfns into the stream.
  */
 static int flush_batch(struct xc_sr_context *ctx)
 {
     int rc = 0;
 
-    if ( ctx->save.nr_batch_pfns == 0 )
+    if ( batch_empty(ctx) )
         return rc;
 
     rc = write_batch(ctx);
@@ -299,19 +315,12 @@ static int flush_batch(struct xc_sr_context *ctx)
 }
 
 /*
- * Add a single pfn to the batch, flushing the batch if full.
+ * Add a single pfn to the batch.
  */
-static int add_to_batch(struct xc_sr_context *ctx, xen_pfn_t pfn)
+static void add_to_batch(struct xc_sr_context *ctx, xen_pfn_t pfn)
 {
-    int rc = 0;
-
-    if ( ctx->save.nr_batch_pfns == MAX_BATCH_SIZE )
-        rc = flush_batch(ctx);
-
-    if ( rc == 0 )
-        ctx->save.batch_pfns[ctx->save.nr_batch_pfns++] = pfn;
-
-    return rc;
+    assert(ctx->save.nr_batch_pfns < MAX_BATCH_SIZE);
+    ctx->save.batch_pfns[ctx->save.nr_batch_pfns++] = pfn;
 }
 
 /*
@@ -358,43 +367,80 @@ static int suspend_domain(struct xc_sr_context *ctx)
  * Send a subset of pages in the guests p2m, according to the dirty bitmap.
  * Used for each subsequent iteration of the live migration loop.
  *
+ * During the precopy stage of a live migration, test the user-supplied
+ * policy function after each batch of pages and cut off the operation
+ * early if indicated (the dirty pages remaining in this round are transferred
+ * into the deferred_pages bitmap).  This function writes observed precopy
+ * policy decisions to ctx->save.policy_decision; callers must check this upon
+ * return.
+ *
  * Bitmap is bounded by p2m_size.
  */
 static int send_dirty_pages(struct xc_sr_context *ctx,
                             unsigned long entries)
 {
     xc_interface *xch = ctx->xch;
-    xen_pfn_t p;
-    unsigned long written;
+    xen_pfn_t p = 0;
+    unsigned long written = 0;
     int rc;
     DECLARE_HYPERCALL_BUFFER_SHADOW(unsigned long, dirty_bitmap,
                                     &ctx->save.dirty_bitmap_hbuf);
 
-    for ( p = 0, written = 0; p < ctx->save.p2m_size; ++p )
-    {
-        if ( !test_bit(p, dirty_bitmap) )
-            continue;
+    int (*precopy_policy)(struct precopy_stats, void *) =
+        ctx->save.callbacks->precopy_policy;
+    void *data = ctx->save.callbacks->data;
 
-        rc = add_to_batch(ctx, p);
+    assert(batch_empty(ctx));
+    while ( p < ctx->save.p2m_size )
+    {
+        if ( ctx->save.phase == XC_SAVE_PHASE_PRECOPY )
+        {
+            ctx->save.policy_decision = precopy_policy(ctx->save.stats, data);
+
+            if ( ctx->save.policy_decision == XGS_POLICY_ABORT )
+            {
+                IPRINTF("Precopy policy has requested we abort, cleaning up");
+                return -1;
+            }
+            else if ( ctx->save.policy_decision != XGS_POLICY_CONTINUE_PRECOPY )
+            {
+                /*
+                 * Any outstanding dirty pages are now deferred until the next
+                 * phase of the migration.
+                 */
+                bitmap_or(ctx->save.deferred_pages, dirty_bitmap,
+                          ctx->save.p2m_size);
+                if ( entries > written )
+                    ctx->save.nr_deferred_pages += entries - written;
+
+                goto done;
+            }
+        }
+
+        for ( ; p < ctx->save.p2m_size && !batch_full(ctx); ++p )
+        {
+            if ( test_and_clear_bit(p, dirty_bitmap) )
+            {
+                add_to_batch(ctx, p);
+                ++written;
+                ++ctx->save.stats.total_written;
+            }
+        }
+
+        rc = flush_batch(ctx);
         if ( rc )
             return rc;
 
-        /* Update progress every 4MB worth of memory sent. */
-        if ( (written & ((1U << (22 - 12)) - 1)) == 0 )
-            xc_report_progress_step(xch, written, entries);
-
-        ++written;
+        /* Update progress after every batch (4MB) worth of memory sent. */
+        xc_report_progress_step(xch, written, entries);
     }
-
-    rc = flush_batch(ctx);
-    if ( rc )
-        return rc;
 
     if ( written > entries )
         DPRINTF("Bitmap contained more entries than expected...");
 
     xc_report_progress_step(xch, entries, entries);
 
+ done:
     return ctx->save.ops.check_vm_state(ctx);
 }
 
@@ -452,8 +498,7 @@ static int update_progress_string(struct xc_sr_context *ctx,
     xc_interface *xch = ctx->xch;
     char *new_str = NULL;
 
-    if ( asprintf(&new_str, "Frames iteration %u of %u",
-                  iter, ctx->save.max_iterations) == -1 )
+    if ( asprintf(&new_str, "Frames iteration %u", iter) == -1 )
     {
         PERROR("Unable to allocate new progress string");
         return -1;
@@ -474,20 +519,34 @@ static int send_memory_live(struct xc_sr_context *ctx)
     xc_interface *xch = ctx->xch;
     xc_shadow_op_stats_t stats = { 0, ctx->save.p2m_size };
     char *progress_str = NULL;
-    unsigned x;
     int rc;
+
+    DECLARE_HYPERCALL_BUFFER_SHADOW(unsigned long, dirty_bitmap,
+                                    &ctx->save.dirty_bitmap_hbuf);
+
+    int (*precopy_policy)(struct precopy_stats, void *) =
+        ctx->save.callbacks->precopy_policy;
+    void *data = ctx->save.callbacks->data;
 
     rc = update_progress_string(ctx, &progress_str, 0);
     if ( rc )
         goto out;
 
+    ctx->save.stats = (struct precopy_stats)
+        {
+            .iteration     = 0,
+            .total_written = 0,
+            .dirty_count   = -1
+        };
+
+    /* This has the side-effect of priming ctx->save.policy_decision. */
     rc = send_all_pages(ctx);
     if ( rc )
         goto out;
 
-    for ( x = 1;
-          ((x < ctx->save.max_iterations) &&
-           (stats.dirty_count > ctx->save.dirty_threshold)); ++x )
+    for ( ctx->save.stats.iteration = 1;
+          ctx->save.policy_decision == XGS_POLICY_CONTINUE_PRECOPY;
+          ++ctx->save.stats.iteration )
     {
         if ( xc_shadow_control(
                  xch, ctx->domid, XEN_DOMCTL_SHADOW_OP_CLEAN,
@@ -499,10 +558,32 @@ static int send_memory_live(struct xc_sr_context *ctx)
             goto out;
         }
 
-        if ( stats.dirty_count == 0 )
-            break;
+        /* Check the new dirty_count against the policy. */
+        ctx->save.stats.dirty_count = stats.dirty_count;
+        ctx->save.policy_decision = precopy_policy(ctx->save.stats, data);
+        if ( ctx->save.policy_decision == XGS_POLICY_ABORT )
+        {
+            IPRINTF("Precopy policy has requested we abort, cleaning up");
+            rc = -1;
+            goto out;
+        }
+        else if ( ctx->save.policy_decision != XGS_POLICY_CONTINUE_PRECOPY )
+        {
+            bitmap_or(ctx->save.deferred_pages, dirty_bitmap,
+                      ctx->save.p2m_size);
+            ctx->save.nr_deferred_pages += stats.dirty_count;
+            rc = 0;
+            goto out;
+        }
 
-        rc = update_progress_string(ctx, &progress_str, x);
+        /*
+         * After this point we won't know how many pages are really dirty until
+         * the next iteration.
+         */
+        ctx->save.stats.dirty_count = -1;
+
+        rc = update_progress_string(ctx, &progress_str,
+                                    ctx->save.stats.iteration);
         if ( rc )
             goto out;
 
@@ -583,6 +664,8 @@ static int suspend_and_send_dirty(struct xc_sr_context *ctx)
     DECLARE_HYPERCALL_BUFFER_SHADOW(unsigned long, dirty_bitmap,
                                     &ctx->save.dirty_bitmap_hbuf);
 
+    ctx->save.phase = XC_SAVE_PHASE_STOP_AND_COPY;
+
     rc = suspend_domain(ctx);
     if ( rc )
         goto out;
@@ -601,7 +684,7 @@ static int suspend_and_send_dirty(struct xc_sr_context *ctx)
     if ( ctx->save.live )
     {
         rc = update_progress_string(ctx, &progress_str,
-                                    ctx->save.max_iterations);
+                                    ctx->save.stats.iteration);
         if ( rc )
             goto out;
     }
@@ -739,6 +822,9 @@ static int setup(struct xc_sr_context *ctx)
     int rc;
     DECLARE_HYPERCALL_BUFFER_SHADOW(unsigned long, dirty_bitmap,
                                     &ctx->save.dirty_bitmap_hbuf);
+
+    ctx->save.phase = ctx->save.live ? XC_SAVE_PHASE_PRECOPY
+                                     : XC_SAVE_PHASE_STOP_AND_COPY;
 
     rc = ctx->save.ops.setup(ctx);
     if ( rc )
@@ -915,6 +1001,17 @@ static int save(struct xc_sr_context *ctx, uint16_t guest_type)
     return rc;
 };
 
+static int simple_precopy_policy(struct precopy_stats stats, void *user)
+{
+    if (stats.dirty_count >= 0 && stats.dirty_count < 50)
+        return XGS_POLICY_STOP_AND_COPY;
+
+    if (stats.iteration >= 5)
+        return XGS_POLICY_STOP_AND_COPY;
+
+    return XGS_POLICY_CONTINUE_PRECOPY;
+}
+
 int xc_domain_save(xc_interface *xch, const struct domain_save_params *params,
                    const struct save_callbacks* callbacks)
 {
@@ -924,8 +1021,12 @@ int xc_domain_save(xc_interface *xch, const struct domain_save_params *params,
             .fd = params->save_fd,
         };
 
+    /* XXX use this to shim our precopy_policy in before moving it to libxl */
+    struct save_callbacks overridden_callbacks = *callbacks;
+    overridden_callbacks.precopy_policy = simple_precopy_policy;
+
     /* GCC 4.4 (of CentOS 6.x vintage) can' t initialise anonymous unions. */
-    ctx.save.callbacks = callbacks;
+    ctx.save.callbacks = &overridden_callbacks;
     ctx.save.live  = params->live;
     ctx.save.debug = params->debug;
     ctx.save.checkpointed = params->stream_type;
@@ -935,15 +1036,6 @@ int xc_domain_save(xc_interface *xch, const struct domain_save_params *params,
     assert(params->stream_type == XC_MIG_STREAM_NONE ||
            params->stream_type == XC_MIG_STREAM_REMUS ||
            params->stream_type == XC_MIG_STREAM_COLO);
-
-    /*
-     * TODO: Find some time to better tweak the live migration algorithm.
-     *
-     * These parameters are better than the legacy algorithm especially for
-     * busy guests.
-     */
-    ctx.save.max_iterations = 5;
-    ctx.save.dirty_threshold = 50;
 
     if ( xc_domain_getinfo(xch, params->dom, 1, &ctx.dominfo) != 1 )
     {
@@ -967,10 +1059,9 @@ int xc_domain_save(xc_interface *xch, const struct domain_save_params *params,
 
     ctx.domid = params->dom;
 
-    DPRINTF("fd %d, dom %u, max_iterations %u, dirty_threshold %u, live %d, "
-            "debug %d, type %d, hvm %d", ctx.fd, ctx.domid,
-            ctx.save.max_iterations, ctx.save.dirty_threshold, ctx.save.live,
-            ctx.save.debug, ctx.save.checkpointed, ctx.dominfo.hvm);
+    DPRINTF("fd %d, dom %u, live %d, debug %d, type %d, hvm %d", ctx.fd,
+            ctx.domid, ctx.save.live, ctx.save.debug, ctx.save.checkpointed,
+            ctx.dominfo.hvm);
 
     if ( ctx.dominfo.hvm )
     {
