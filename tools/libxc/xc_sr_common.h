@@ -202,20 +202,24 @@ struct xc_sr_context
 
             enum {
                 XC_SAVE_PHASE_PRECOPY,
-                XC_SAVE_PHASE_STOP_AND_COPY
+                XC_SAVE_PHASE_STOP_AND_COPY,
+                XC_SAVE_PHASE_POSTCOPY
             } phase;
 
             struct precopy_stats stats;
             int policy_decision;
 
             enum {
-                XC_SR_SAVE_BATCH_PRECOPY_PAGE
+                XC_SR_SAVE_BATCH_PRECOPY_PAGE,
+                XC_SR_SAVE_BATCH_POSTCOPY_PFN,
+                XC_SR_SAVE_BATCH_POSTCOPY_PAGE
             } batch_type;
             xen_pfn_t *batch_pfns;
             unsigned nr_batch_pfns;
             unsigned long *deferred_pages;
             unsigned long nr_deferred_pages;
             xc_hypercall_buffer_t dirty_bitmap_hbuf;
+            unsigned long nr_final_dirty_pages;
         } save;
 
         struct /* Restore data. */
