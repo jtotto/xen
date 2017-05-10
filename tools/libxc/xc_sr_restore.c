@@ -8,6 +8,7 @@
 #include <time.h>
 
 static struct timespec migration_suspend;
+static struct timespec migration_transition;
 static struct timespec migration_postcopy_complete;
 
 /*
@@ -1567,6 +1568,10 @@ static int process_record(struct xc_sr_context *ctx, struct xc_sr_record *rec)
         break;
 
     case REC_TYPE_POSTCOPY_TRANSITION:
+        clock_gettime(CLOCK_MONOTONIC, &migration_transition);
+        IPRINTF("MIGRATION RECEIVE POSTCOPY TRANSITION %f\n",
+                (double)migration_transition.tv_sec +
+                (double)migration_transition.tv_nsec * (1.0/1000000000.0));
         rc = handle_postcopy_transition(ctx);
         break;
 
