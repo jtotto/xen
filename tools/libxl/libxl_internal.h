@@ -3325,6 +3325,7 @@ struct libxl__domain_save_state {
     int recv_fd;
     bool *postcopy_transitioned;
     int memory_strategy;
+    unsigned int precopy_iterations;
     libxl_domain_type type;
     int live;
     int debug;

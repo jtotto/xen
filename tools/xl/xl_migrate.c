@@ -178,7 +178,8 @@ static void migrate_do_preamble(int send_fd, int recv_fd, pid_t child,
 
 static void migrate_domain(uint32_t domid, const char *rune, int debug,
                            const char *override_config_file,
-                           int memory_strategy)
+                           int memory_strategy,
+                           unsigned int precopy_iterations)
 {
     pid_t child = -1;
     int rc;
@@ -209,7 +210,7 @@ static void migrate_domain(uint32_t domid, const char *rune, int debug,
         flags |= LIBXL_SUSPEND_DEBUG;
     rc = libxl_domain_live_migrate(ctx, domid, send_fd, flags,
                                    recv_fd, &postcopy_transitioned,
-                                   memory_strategy, NULL);
+                                   memory_strategy, precopy_iterations, NULL);
     if (rc) {
         fprintf(stderr, "migration sender: libxl_domain_suspend failed"
                 " (rc=%d)\n", rc);
@@ -590,14 +591,16 @@ int main_migrate(int argc, char **argv)
     char *host;
     int opt, daemonize = 1, monitor = 1, debug = 0, pause_after_migration = 0;
     int memory_strategy = LIBXL_LM_MEMORY_DEFAULT;
+    unsigned int precopy_iterations = 5;
     static struct option opts[] = {
         {"debug", 0, 0, 0x100},
         {"live", 0, 0, 0x200},
         {"postcopy", 0, 0, 0x400},
+        {"precopy-iterations", 1, 0, 'i'},
         COMMON_LONG_OPTS
     };
 
-    SWITCH_FOREACH_OPT(opt, "FC:s:ep", opts, "migrate", 2) {
+    SWITCH_FOREACH_OPT(opt, "FC:s:epi", opts, "migrate", 2) {
     case 'C':
         config_filename = optarg;
         break;
@@ -613,6 +616,10 @@ int main_migrate(int argc, char **argv)
         break;
     case 'p':
         pause_after_migration = 1;
+        break;
+    case 'i':
+        precopy_iterations = atoi(optarg);
+        assert(precopy_iterations >= 0);
         break;
     case 0x100: /* --debug */
         debug = 1;
@@ -653,7 +660,8 @@ int main_migrate(int argc, char **argv)
                   pause_after_migration ? " -p" : "");
     }
 
-    migrate_domain(domid, rune, debug, config_filename, memory_strategy);
+    migrate_domain(domid, rune, debug, config_filename, memory_strategy,
+                   precopy_iterations);
     return EXIT_SUCCESS;
 }
 

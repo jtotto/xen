@@ -1414,6 +1414,7 @@ int libxl_domain_live_migrate(libxl_ctx *ctx, uint32_t domid, int send_fd,
                               int recv_fd,
                               bool *postcopy_transitioned, /* OUT */
                               int memory_strategy,
+                              unsigned int precopy_iterations,
                               const libxl_asyncop_how *ao_how)
                               LIBXL_EXTERNAL_CALLERS_ONLY;
 

@@ -346,7 +346,7 @@ static int libxl__save_live_migration_precopy_policy(struct precopy_stats stats,
 
     if ((stats.dirty_count >= 0 &&
          stats.dirty_count <= 50) ||
-        (stats.iteration >= 5)) {
+        (stats.iteration >= dss->precopy_iterations)) {
         return (dss->memory_strategy == LIBXL_LM_MEMORY_POSTCOPY)
             ? XGS_POLICY_POSTCOPY
             : XGS_POLICY_STOP_AND_COPY;
