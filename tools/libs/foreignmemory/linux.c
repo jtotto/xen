@@ -22,6 +22,7 @@
 #include <fcntl.h>
 #include <unistd.h>
 #include <string.h>
+#include <time.h>
 
 #include <sys/mman.h>
 #include <sys/ioctl.h>
@@ -33,6 +34,17 @@
 #ifndef O_CLOEXEC
 #define O_CLOEXEC 0
 #endif
+
+#define TRACETIME(name) do {                                        \
+    struct timespec name ## ts;                                     \
+    clock_gettime(CLOCK_MONOTONIC, &name ## ts);                    \
+    fprintf(stderr, "MIGRATION POSTCOPY " #name " %f\n",            \
+            (double)name ## ts.tv_sec +                             \
+            (double)name ## ts.tv_nsec * (1.0/1000000000.0));       \
+} while (0)
+
+#undef TRACETIME
+#define TRACETIME(...)
 
 int osdep_xenforeignmemory_open(xenforeignmemory_handle *fmem)
 {
@@ -129,8 +141,22 @@ static int retry_paged(int fd, uint32_t dom, void *addr,
             ioctlx.num++;
         }
 
+        TRACETIME(linux_foreignmemorymap_retry_paged_pre_ioctl);
+
+#if 0
+        fprintf(stderr, "retry_paged() ioctl with %u gfns\n", ioctlx.num);
+        for (unsigned i = 0; i < ioctlx.num; ++i)
+        {
+            fprintf(stderr, "retry_paged() gfn %"PRI_xen_pfn"\n",
+                    ioctlx.arr[i]);
+        }
+#endif
+
         /* Send request and abort on fatal error */
         rc = ioctl(fd, IOCTL_PRIVCMD_MMAPBATCH_V2, &ioctlx);
+
+        TRACETIME(linux_foreignmemorymap_retry_paged_post_ioctl);
+
         if ( rc < 0 && errno != ENOENT )
             goto out;
 
@@ -152,6 +178,8 @@ void *osdep_xenforeignmemory_map(xenforeignmemory_handle *fmem,
     size_t i;
     int rc;
 
+    TRACETIME(linux_foreignmemorymap_begins);
+
     addr = mmap(NULL, num << PAGE_SHIFT, prot, MAP_SHARED,
                 fd, 0);
     if ( addr == MAP_FAILED )
@@ -166,14 +194,18 @@ void *osdep_xenforeignmemory_map(xenforeignmemory_handle *fmem,
     ioctlx.arr = arr;
     ioctlx.err = err;
 
+    TRACETIME(linux_foreignmemorymap_pre_ioctl);
+
     rc = ioctl(fd, IOCTL_PRIVCMD_MMAPBATCH_V2, &ioctlx);
 
     /* Command was recognized, some gfn in arr are in paging state */
     if ( rc < 0 && errno == ENOENT )
     {
         do {
+            TRACETIME(linux_foreignmemorymap_paging_iteration);
             usleep(100);
             rc = retry_paged(fd, dom, addr, arr, err, num);
+            TRACETIME(linux_foreignmemorymap_paging_iteration_complete);
         } while ( rc > 0 );
     }
     /* Command was not recognized, use fall back */

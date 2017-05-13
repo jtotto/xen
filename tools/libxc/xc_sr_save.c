@@ -3,6 +3,14 @@
 
 #include "xc_sr_common.h"
 
+#define TRACETIME(name) do {                                        \
+    struct timespec name ## ts;                                     \
+    clock_gettime(CLOCK_MONOTONIC, &name ## ts);                    \
+    IPRINTF("MIGRATION POSTCOPY " #name " %f",                      \
+            (double)name ## ts.tv_sec +                             \
+            (double)name ## ts.tv_nsec * (1.0/1000000000.0));       \
+} while (0)
+
 #define MAX_BATCH_SIZE \
     max(max(MAX_PRECOPY_BATCH_SIZE, MAX_PFN_BATCH_SIZE), MAX_POSTCOPY_BATCH_SIZE)
 
@@ -1051,7 +1059,6 @@ static int handle_postcopy_faults(struct xc_sr_context *ctx,
 {
     int rc;
     unsigned int i;
-    xc_interface *xch = ctx->xch;
     struct xc_sr_rec_pages_header *fault_pages = rec->data;
 
     DECLARE_HYPERCALL_BUFFER_SHADOW(unsigned long, dirty_bitmap,
@@ -1064,7 +1071,8 @@ static int handle_postcopy_faults(struct xc_sr_context *ctx,
     if ( rc )
         return rc;
 
-    DBGPRINTF("Handling a batch of %"PRIu32" faults!", fault_pages->count);
+    //xc_interface *xch = ctx->xch;
+    //IPRINTF("Handling a batch of %"PRIu32" faults!", fault_pages->count);
 
     assert(ctx->save.batch_type == XC_SR_SAVE_BATCH_POSTCOPY_PAGE);
     for ( i = 0; i < fault_pages->count; ++i )
@@ -1078,6 +1086,8 @@ static int handle_postcopy_faults(struct xc_sr_context *ctx,
                     return rc;
             }
 
+            //IPRINTF("pfn %"PRI_xen_pfn" added to fault response",
+            //        fault_pages->pfn[i]);
             add_to_batch(ctx, fault_pages->pfn[i]);
             ++(*nr_new_fault_pfns);
         }
@@ -1212,6 +1222,7 @@ static int postcopy_domain_memory(struct xc_sr_context *ctx)
             }
         }
 
+        //TRACETIME(flush_postcopy_page_batch);
         rc = flush_batch(ctx);
         if ( rc )
             goto err;

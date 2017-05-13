@@ -1243,6 +1243,14 @@ void libxl__srm_callout_callback_restore_results(xen_pfn_t store_mfn,
     shs->need_results =           0;
 }
 
+#define TRACETIME(name) do {                                        \
+    struct timespec name ## ts;                                     \
+    clock_gettime(CLOCK_MONOTONIC, &name ## ts);                    \
+    LOG(INFO, "MIGRATION POSTCOPY " #name " %f",                    \
+            (double)name ## ts.tv_sec +                             \
+            (double)name ## ts.tv_nsec * (1.0/1000000000.0));       \
+} while (0)
+
 static void domcreate_stream_done(libxl__egc *egc,
                                   libxl__stream_read_state *srs,
                                   int ret)
@@ -1265,6 +1273,8 @@ static void domcreate_stream_done(libxl__egc *egc,
         goto out;
 
     gettimeofday(&start_time, NULL);
+
+    TRACETIME(domcreate_stream_done);
 
     switch (info->type) {
     case LIBXL_DOMAIN_TYPE_HVM:
@@ -1301,6 +1311,8 @@ static void domcreate_stream_done(libxl__egc *egc,
     ret = libxl__build_post(gc, domid, info, state, vments, localents);
     if (ret)
         goto out;
+
+    //TRACETIME(libxl__build_post);
 
     if (info->type == LIBXL_DOMAIN_TYPE_HVM) {
         state->saved_state = GCSPRINTF(
@@ -1340,6 +1352,8 @@ static void domcreate_rebuild_done(libxl__egc *egc,
 
     store_libxl_entry(gc, domid, &d_config->b_info);
 
+    //TRACETIME(domcreate_rebuild_done);
+
     libxl__multidev_begin(ao, &dcs->multidev);
     dcs->multidev.callback = domcreate_launch_dm;
     libxl__add_disks(egc, ao, domid, d_config, &dcs->multidev);
@@ -1358,6 +1372,8 @@ static void domcreate_launch_dm(libxl__egc *egc, libxl__multidev *multidev,
     libxl__domain_create_state *dcs = CONTAINER_OF(multidev, *dcs, multidev);
     STATE_AO_GC(dcs->ao);
     int i;
+
+    //TRACETIME(domcreate_launch_dm);
 
     /* convenience aliases */
     const uint32_t domid = dcs->guest_domid;
@@ -1446,6 +1462,8 @@ static void domcreate_launch_dm(libxl__egc *egc, libxl__multidev *multidev,
     for (i = 0; i < d_config->num_p9s; i++)
         libxl__device_p9_add(gc, domid, &d_config->p9[i]);
 
+    //TRACETIME(domcreate_launch_dm_half);
+
     switch (d_config->c_info.type) {
     case LIBXL_DOMAIN_TYPE_HVM:
     {
@@ -1472,7 +1490,10 @@ static void domcreate_launch_dm(libxl__egc *egc, libxl__multidev *multidev,
         if (libxl_defbool_val(d_config->b_info.device_model_stubdomain))
             libxl__spawn_stub_dm(egc, &dcs->sdss);
         else
+        {
+            //TRACETIME(pre_spawn_local_dm);
             libxl__spawn_local_dm(egc, &dcs->sdss.dm);
+        }
 
         /*
          * Handle the domain's (and the related stubdomain's) access to
@@ -1628,6 +1649,8 @@ static void domcreate_devmodel_started(libxl__egc *egc,
         }
     }
 
+    //TRACETIME(devmodel_started);
+
     dcs->device_type_idx = -1;
     domcreate_attach_devices(egc, &dcs->multidev, 0);
     return;
@@ -1644,6 +1667,8 @@ static void domcreate_complete(libxl__egc *egc,
     STATE_AO_GC(dcs->ao);
     libxl_domain_config *const d_config = dcs->guest_config;
     libxl_domain_config *d_config_saved = &dcs->guest_config_saved;
+
+    //TRACETIME(domcreate_complete);
 
     libxl__file_reference_unmap(&dcs->build_state.pv_kernel);
     libxl__file_reference_unmap(&dcs->build_state.pv_ramdisk);
@@ -1701,8 +1726,6 @@ static void domcreate_destruction_cb(libxl__egc *egc,
     domcreate_report_result(egc, dcs, ERROR_FAIL);
 }
 
-static struct timespec migration_resume;
-
 static void domcreate_report_result(libxl__egc *egc,
                                     libxl__domain_create_state *dcs,
                                     int rc)
@@ -1722,13 +1745,11 @@ static void domcreate_report_result(libxl__egc *egc,
         case DCS_POSTCOPY_STREAM_INPROGRESS:
         case DCS_POSTCOPY_STREAM_SUCCESS:
             /* If we haven't yet failed, try to unpause the guest. */
-            clock_gettime(CLOCK_MONOTONIC, &migration_resume);
-            LOG(INFO, "MIGRATION POSTCOPY RESUME %f\n",
-                    (double)migration_resume.tv_sec +
-                    (double)migration_resume.tv_nsec * (1.0/1000000000.0));
             rc = rc ?: libxl_domain_unpause(CTX, dcs->guest_domid);
             if (dcs->postcopy_resumed)
                 *dcs->postcopy_resumed = !rc;
+
+            TRACETIME(unpause);
 
             if (dcs->postcopy.stream.state == DCS_POSTCOPY_STREAM_SUCCESS) {
                 /*

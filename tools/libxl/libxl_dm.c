@@ -31,7 +31,15 @@ static const char *libxl_tapif_script(libxl__gc *gc)
 #else
     return GCSPRINTF("%s/qemu-ifup", libxl__xen_script_dir_path());
 #endif
-}
+} 
+
+#define TRACETIME(name) do {                                        \
+    struct timespec name ## ts;                                     \
+    clock_gettime(CLOCK_MONOTONIC, &name ## ts);                    \
+    LOG(INFO, "MIGRATION POSTCOPY " #name " %f",                    \
+            (double)name ## ts.tv_sec +                             \
+            (double)name ## ts.tv_nsec * (1.0/1000000000.0));       \
+} while (0)
 
 const char *libxl__device_model_savefile(libxl__gc *gc, uint32_t domid)
 {
@@ -2205,8 +2213,10 @@ void libxl__spawn_local_dm(libxl__egc *egc, libxl__dm_spawn_state *dmss)
         libxl__xs_printf(gc, XBT_NULL, GCSPRINTF("%s/disable_pf", path),
                          "%d", !libxl_defbool_val(b_info->u.hvm.xen_platform_pci));
 
+    //TRACETIME(pre_qemu_logfile);
     logfile_w = libxl__create_qemu_logfile(gc, GCSPRINTF("qemu-dm-%s",
                                                          c_info->name));
+    //TRACETIME(post_qemu_logfile);
     if (logfile_w < 0) {
         rc = logfile_w;
         goto out;
@@ -2221,6 +2231,7 @@ void libxl__spawn_local_dm(libxl__egc *egc, libxl__dm_spawn_state *dmss)
     const char *dom_path = libxl__xs_get_dompath(gc, domid);
     spawn->pidpath = GCSPRINTF("%s/%s", dom_path, "image/device-model-pid");
 
+    //TRACETIME(pre_vnc_loop);
     if (vnc && vnc->passwd) {
         /* This xenstore key will only be used by qemu-xen-traditionnal.
          * The code to supply vncpasswd to qemu-xen is later. */
@@ -2239,6 +2250,7 @@ retry_transaction:
                     goto retry_transaction;
         }
     }
+    //TRACETIME(post_vnc_loop);
 
     LOGD(DEBUG, domid, "Spawning device-model %s with arguments:", dm);
     for (arg = args; *arg; arg++)
@@ -2258,6 +2270,8 @@ retry_transaction:
     spawn->confirm_cb = device_model_confirm;
     spawn->failure_cb = device_model_startup_failed;
     spawn->detached_cb = device_model_detached;
+
+    TRACETIME(immediately_pre_spawn);
 
     rc = libxl__spawn_spawn(egc, spawn);
     if (rc < 0)
@@ -2324,6 +2338,8 @@ static void device_model_detached(libxl__egc *egc,
                                   libxl__spawn_state *spawn)
 {
     libxl__dm_spawn_state *dmss = CONTAINER_OF(spawn, *dmss, spawn);
+    EGC_GC;
+    //TRACETIME(detached_cb);
     device_model_spawn_outcome(egc, dmss, 0);
 }
 
@@ -2351,6 +2367,7 @@ static void device_model_spawn_outcome(libxl__egc *egc,
     }
 
  out:
+    TRACETIME(spawn_cb);
     dmss->callback(egc, dmss, rc);
 }
 

@@ -11,6 +11,14 @@ static struct timespec migration_suspend;
 static struct timespec migration_transition;
 static struct timespec migration_postcopy_complete;
 
+#define TRACETIME(name) do {                                        \
+    struct timespec name ## ts;                                     \
+    clock_gettime(CLOCK_MONOTONIC, &name ## ts);                    \
+    IPRINTF("MIGRATION POSTCOPY " #name " %f",                      \
+            (double)name ## ts.tv_sec +                             \
+            (double)name ## ts.tv_nsec * (1.0/1000000000.0));       \
+} while (0)
+
 /*
  * Read and validate the Image and Domain headers.
  */
@@ -690,6 +698,8 @@ static int process_postcopy_pfns(struct xc_sr_context *ctx, unsigned int count,
         goto out;
     }
 
+    TRACETIME(begin_evicting_page_batch);
+
     for ( i = 0; i < count; ++i )
     {
         if ( types[i] < XEN_DOMCTL_PFINFO_BROKEN )
@@ -748,6 +758,8 @@ static int process_postcopy_pfns(struct xc_sr_context *ctx, unsigned int count,
             ++paging->nr_pending_pfns;
         }
     }
+
+    TRACETIME(end_evicting_page_batch);
 
     rc = 0;
 
@@ -935,7 +947,8 @@ static int process_postcopy_page_data(struct xc_sr_context *ctx,
             {
                 if ( postcopy_pfn_requested(ctx, pfns[i]) )
                 {
-                    DBGPRINTF("Received requested pfn %"PRI_xen_pfn, pfns[i]);
+                    //TRACETIME(received_requested_pfn);
+                    //IPRINTF("Received requested pfn %"PRI_xen_pfn, pfns[i]);
                     push_responses = true;
                 }
 
@@ -1031,6 +1044,10 @@ static int forward_postcopy_paging_requests(struct xc_sr_context *ctx,
         .data   = &phdr
     };
 
+    //xc_interface *xch = ctx->xch;
+    //TRACETIME(forward_request);
+    //IPRINTF("Requesting batch of %u faulting pages", nr_batch_requests);
+
     return write_split_record(ctx, ctx->restore.send_back_fd, &rec,
                               paging->request_batch, batchsz);
 }
@@ -1056,7 +1073,8 @@ static int handle_postcopy_paging_requests(struct xc_sr_context *ctx)
         drop_requested = !!(req.u.mem_paging.flags & MEM_PAGING_DROP_PAGE);
         pfn = req.u.mem_paging.gfn;
 
-        DBGPRINTF("Postcopy page fault! %"PRI_xen_pfn, pfn);
+        //TRACETIME(receive_fault);
+        //IPRINTF("Postcopy page fault! %"PRI_xen_pfn, pfn);
 
         if ( postcopy_pfn_invalid(ctx, pfn) )
         {
@@ -1108,6 +1126,7 @@ static int handle_postcopy_paging_requests(struct xc_sr_context *ctx)
                 /* This is the first time this pfn has been requested. */
                 mark_postcopy_pfn_requested(ctx, pfn);
 
+                //IPRINTF("Adding %"PRI_xen_pfn" to request batch", pfn);
                 paging->request_batch[nr_batch_requests] = pfn;
                 ++nr_batch_requests;
             }
@@ -1227,6 +1246,14 @@ static int postcopy_restore(struct xc_sr_context *ctx)
             PERROR("Failed to poll the pager event channel/restore stream");
             goto err;
         }
+
+#if 0
+        TRACETIME(afterpoll);
+        IPRINTF("poll() rc %d recv fd %d evtchn fd %d",
+                rc,
+                pfds[1].revents,
+                pfds[0].revents);
+#endif
 
         /*
          * Fill in any newly received page data first, on the off chance that
@@ -1560,6 +1587,7 @@ static int process_record(struct xc_sr_context *ctx, struct xc_sr_record *rec)
         break;
 
     case REC_TYPE_POSTCOPY_PFNS_BEGIN:
+        TRACETIME(postcopy_pfns_begin);
         rc = postcopy_paging_setup(ctx);
         break;
 
