@@ -49,15 +49,15 @@ int mem_paging_memop(XEN_GUEST_HANDLE_PARAM(xen_mem_paging_op_t) arg)
     switch( mpo.op )
     {
     case XENMEM_paging_op_nominate:
-        rc = p2m_mem_paging_nominate(d, mpo.gfn);
+        rc = p2m_mem_paging_nominate(d, mpo.u.single.gfn);
         break;
 
     case XENMEM_paging_op_evict:
-        rc = p2m_mem_paging_evict(d, mpo.gfn);
+        rc = p2m_mem_paging_evict(d, mpo.u.single.gfn);
         break;
 
     case XENMEM_paging_op_prep:
-        rc = p2m_mem_paging_prep(d, mpo.gfn, mpo.buffer);
+        rc = p2m_mem_paging_prep(d, mpo.u.single.gfn, mpo.u.single.buffer);
         if ( !rc )
             copyback = 1;
         break;

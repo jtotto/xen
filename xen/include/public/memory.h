@@ -394,10 +394,14 @@ struct xen_mem_paging_op {
     uint8_t     op;         /* XENMEM_paging_op_* */
     domid_t     domain;
 
-    /* PAGING_PREP IN: buffer to immediately fill page in */
-    uint64_aligned_t    buffer;
-    /* Other OPs */
-    uint64_aligned_t    gfn;           /* IN:  gfn of page being operated on */
+    union {
+        struct {
+            /* PAGING_PREP IN: buffer to immediately fill page in */
+            uint64_aligned_t    buffer;
+            /* Other OPs */
+            uint64_aligned_t    gfn;   /* IN:  gfn of page being operated on */
+        } single;
+    } u;
 };
 typedef struct xen_mem_paging_op xen_mem_paging_op_t;
 DEFINE_XEN_GUEST_HANDLE(xen_mem_paging_op_t);

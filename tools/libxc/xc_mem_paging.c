@@ -29,10 +29,10 @@ static int xc_mem_paging_memop(xc_interface *xch, domid_t domain_id,
 
     memset(&mpo, 0, sizeof(mpo));
 
-    mpo.op      = op;
-    mpo.domain  = domain_id;
-    mpo.gfn     = gfn;
-    mpo.buffer  = (unsigned long) buffer;
+    mpo.op               = op;
+    mpo.domain           = domain_id;
+    mpo.u.single.gfn     = gfn;
+    mpo.u.single.buffer  = (unsigned long) buffer;
 
     return do_memory_op(xch, XENMEM_paging_op, &mpo, sizeof(mpo));
 }
