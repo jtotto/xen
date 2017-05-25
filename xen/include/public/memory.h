@@ -385,10 +385,11 @@ typedef struct xen_pod_target xen_pod_target_t;
 #define XENMEM_get_sharing_freed_pages    18
 #define XENMEM_get_sharing_shared_pages   19
 
-#define XENMEM_paging_op                    20
-#define XENMEM_paging_op_nominate           0
-#define XENMEM_paging_op_evict              1
-#define XENMEM_paging_op_prep               2
+#define XENMEM_paging_op                     20
+#define XENMEM_paging_op_nominate            0
+#define XENMEM_paging_op_evict               1
+#define XENMEM_paging_op_prep                2
+#define XENMEM_paging_op_populate_evicted    3
 
 struct xen_mem_paging_op {
     uint8_t     op;         /* XENMEM_paging_op_* */
@@ -401,6 +402,10 @@ struct xen_mem_paging_op {
             /* Other OPs */
             uint64_aligned_t    gfn;   /* IN:  gfn of page being operated on */
         } single;
+        struct {
+            XEN_GUEST_HANDLE(xen_pfn_t) gfns;
+            uint32_t                    nr;
+        } batch;
     } u;
 };
 typedef struct xen_mem_paging_op xen_mem_paging_op_t;

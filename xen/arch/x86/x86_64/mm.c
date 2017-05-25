@@ -926,8 +926,9 @@ long subarch_memory_op(unsigned long cmd, XEN_GUEST_HANDLE_PARAM(void) arg)
     xen_pfn_t mfn, last_mfn;
     unsigned int i;
     long rc = 0;
+    int op = cmd & MEMOP_CMD_MASK;
 
-    switch ( cmd )
+    switch ( op )
     {
     case XENMEM_machphys_mfn_list:
         if ( copy_from_guest(&xmml, arg, 1) )
@@ -1004,7 +1005,8 @@ long subarch_memory_op(unsigned long cmd, XEN_GUEST_HANDLE_PARAM(void) arg)
         return mem_sharing_get_nr_shared_mfns();
 
     case XENMEM_paging_op:
-        return mem_paging_memop(guest_handle_cast(arg, xen_mem_paging_op_t));
+        return mem_paging_memop(cmd,
+                                guest_handle_cast(arg, xen_mem_paging_op_t));
 
     case XENMEM_sharing_op:
         return mem_sharing_memop(guest_handle_cast(arg, xen_mem_sharing_op_t));

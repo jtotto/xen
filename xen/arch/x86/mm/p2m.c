@@ -1449,6 +1449,107 @@ int p2m_mem_paging_evict(struct domain *d, unsigned long gfn)
 }
 
 /**
+ * p2m_mem_paging_populate_evicted - 'populate' a guest page as paged-out
+ * @d: guest domain
+ * @gfn: guest page to populate
+ *
+ * Returns 0 for success or negative errno values if eviction is not possible.
+ *
+ * p2m_mem_paging_populate_evicted() is mostly commonly called by a pager
+ * during guest restoration to mark a page as evicted so that the guest can be
+ * resumed before memory restoration is complete.
+ *
+ * Ideally, the page has never previously been populated, and it is only
+ * necessary to mark the existing hole in the physmap as an evicted page.
+ * However, to accomodate the common live migration scenario in which a page is
+ * populated but subsequently has its contents invalidated by a write at the
+ * sender, permit @gfn to have already been populated and free its current
+ * backing frame if so.
+ */
+int p2m_mem_paging_populate_evicted(struct domain *d, unsigned long gfn)
+{
+    struct page_info *page = NULL;
+    p2m_type_t p2mt;
+    p2m_access_t a;
+    mfn_t mfn;
+    struct p2m_domain *p2m = p2m_get_hostp2m(d);
+    int rc = -EBUSY;
+
+    gfn_lock(p2m, gfn, 0);
+
+    mfn = p2m->get_entry(p2m, gfn, &p2mt, &a, 0, NULL, NULL);
+
+    if ( mfn_valid(mfn) )
+    {
+        /*
+         * This is the first case we know how to deal with: the page has
+         * previously been populated, but the caller wants it in the evicted
+         * state anyway (e.g. because it was dirtied during live migration and
+         * is now being postcopy migrated).
+         *
+         * Double-check that it's pageable according to the union of the
+         * normal nominate() and evict() criteria, and free its backing page if
+         * so.
+         */
+
+        if ( !p2m_is_pageable(p2mt) )
+            goto out;
+
+        page = mfn_to_page(mfn);
+        if ( !get_page(page, d) )
+            goto out;
+
+        if ( is_iomem_page(mfn) )
+            goto err_put;
+
+        if ( (page->count_info & (PGC_count_mask | PGC_allocated)) !=
+             (2 | PGC_allocated) )
+            goto err_put;
+
+        if ( (page->u.inuse.type_info & PGT_count_mask) != 0 )
+            goto err_put;
+
+        /* Decrement guest domain's ref count of the page. */
+        if ( test_and_clear_bit(_PGC_allocated, &page->count_info) )
+            put_page(page);
+
+        /* Clear content before returning the page to Xen. */
+        scrub_one_page(page);
+
+        /* Finally, drop the ref _we_ took on the page, freeing it fully. */
+        put_page(page);
+    }
+    else if ( p2m_is_hole(p2mt) && !p2m_is_paging(p2mt) )
+    {
+        /*
+         * This is the second case we know how to deal with: the pfn isn't
+         * currently populated, and can transition directly to paged_out.  All
+         * we need to do is adjust its p2m entry, which we share with the first
+         * case, so there's nothing further to do along this branch.
+         */
+    }
+    else
+    {
+        /* We can't handle this - error out. */
+        goto out;
+    }
+
+    rc = p2m_set_entry(p2m, gfn, INVALID_MFN, PAGE_ORDER_4K, p2m_ram_paged, a);
+    if ( !rc )
+        atomic_inc(&d->paged_pages);
+
+    /* Hop over the inapplicable put_page(). */
+    goto out;
+
+ err_put:
+    put_page(page);
+
+ out:
+    gfn_unlock(p2m, gfn, 0);
+    return rc;
+}
+
+/**
  * p2m_mem_paging_drop_page - Tell pager to drop its reference to a paged page
  * @d: guest domain
  * @gfn: guest page to drop

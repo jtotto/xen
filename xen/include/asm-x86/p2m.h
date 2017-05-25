@@ -676,6 +676,8 @@ int set_shared_p2m_entry(struct domain *d, unsigned long gfn, mfn_t mfn);
 int p2m_mem_paging_nominate(struct domain *d, unsigned long gfn);
 /* Evict a frame */
 int p2m_mem_paging_evict(struct domain *d, unsigned long gfn);
+/* If @gfn is populated, evict it.  If not, mark it as paged-out directly. */
+int p2m_mem_paging_populate_evicted(struct domain *d, unsigned long gfn);
 /* Tell xenpaging to drop a paged out frame */
 void p2m_mem_paging_drop_page(struct domain *d, unsigned long gfn, 
                                 p2m_type_t p2mt);

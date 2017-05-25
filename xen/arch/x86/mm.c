@@ -4955,9 +4955,10 @@ int xenmem_add_to_physmap_one(
 
 long arch_memory_op(unsigned long cmd, XEN_GUEST_HANDLE_PARAM(void) arg)
 {
-    int rc;
+    long rc;
+    int op = cmd & MEMOP_CMD_MASK;
 
-    switch ( cmd )
+    switch ( op )
     {
     case XENMEM_set_memory_map:
     {

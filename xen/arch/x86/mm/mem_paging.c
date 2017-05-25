@@ -21,12 +21,17 @@
 
 
 #include <asm/p2m.h>
+#include <xen/event.h>
 #include <xen/guest_access.h>
+#include <xen/hypercall.h>
 #include <xsm/xsm.h>
 
-int mem_paging_memop(XEN_GUEST_HANDLE_PARAM(xen_mem_paging_op_t) arg)
+long mem_paging_memop(unsigned long cmd,
+                      XEN_GUEST_HANDLE_PARAM(xen_mem_paging_op_t) arg)
 {
-    int rc;
+    long rc;
+    unsigned long start_gfn = cmd >> MEMOP_EXTENT_SHIFT;
+    xen_pfn_t gfn;
     xen_mem_paging_op_t mpo;
     struct domain *d;
     bool_t copyback = 0;
@@ -54,6 +59,31 @@ int mem_paging_memop(XEN_GUEST_HANDLE_PARAM(xen_mem_paging_op_t) arg)
 
     case XENMEM_paging_op_evict:
         rc = p2m_mem_paging_evict(d, mpo.u.single.gfn);
+        break;
+
+    case XENMEM_paging_op_populate_evicted:
+        while ( start_gfn < mpo.u.batch.nr )
+        {
+            if ( copy_from_guest_offset(&gfn, mpo.u.batch.gfns, start_gfn, 1) )
+            {
+                rc = -EFAULT;
+                goto out;
+            }
+
+            rc = p2m_mem_paging_populate_evicted(d, gfn);
+            if ( rc )
+                goto out;
+
+            if ( mpo.u.batch.nr > ++start_gfn && hypercall_preempt_check() )
+            {
+                cmd = XENMEM_paging_op | (start_gfn << MEMOP_EXTENT_SHIFT);
+                rc = hypercall_create_continuation(__HYPERVISOR_memory_op, "lh",
+                                                   cmd, arg);
+                goto out;
+            }
+        }
+
+        rc = 0;
         break;
 
     case XENMEM_paging_op_prep:

@@ -116,6 +116,37 @@ int xc_mem_paging_load(xc_interface *xch, domid_t domain_id,
     return rc;
 }
 
+int xc_mem_paging_populate_evicted(xc_interface *xch,
+                                   domid_t domain_id,
+                                   xen_pfn_t *gfns,
+                                   uint32_t nr)
+{
+    DECLARE_HYPERCALL_BOUNCE(gfns, nr * sizeof(*gfns),
+                             XC_HYPERCALL_BUFFER_BOUNCE_IN);
+    int rc;
+
+    xen_mem_paging_op_t mpo =
+    {
+        .op       = XENMEM_paging_op_populate_evicted,
+        .domain   = domain_id,
+        .u        = { .batch = { .nr = nr } }
+    };
+
+    if ( xc_hypercall_bounce_pre(xch, gfns) )
+    {
+        PERROR("Could not bounce memory for XENMEM_paging_op_populate_evicted");
+        return -1;
+    }
+
+    set_xen_guest_handle(mpo.u.batch.gfns, gfns);
+
+    rc = do_memory_op(xch, XENMEM_paging_op, &mpo, sizeof(mpo));
+
+    xc_hypercall_bounce_post(xch, gfns);
+
+    return rc;
+}
+
 
 /*
  * Local variables:

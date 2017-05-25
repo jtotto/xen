@@ -53,8 +53,9 @@ int compat_arch_memory_op(unsigned long cmd, XEN_GUEST_HANDLE_PARAM(void) arg)
     compat_pfn_t mfn;
     unsigned int i;
     int rc = 0;
+    int op = cmd & MEMOP_CMD_MASK;
 
-    switch ( cmd )
+    switch ( op )
     {
     case XENMEM_set_memory_map:
     {
@@ -187,7 +188,8 @@ int compat_arch_memory_op(unsigned long cmd, XEN_GUEST_HANDLE_PARAM(void) arg)
         return mem_sharing_get_nr_shared_mfns();
 
     case XENMEM_paging_op:
-        return mem_paging_memop(guest_handle_cast(arg, xen_mem_paging_op_t));
+        return mem_paging_memop(cmd,
+                                guest_handle_cast(arg, xen_mem_paging_op_t));
 
     case XENMEM_sharing_op:
         return mem_sharing_memop(guest_handle_cast(arg, xen_mem_sharing_op_t));

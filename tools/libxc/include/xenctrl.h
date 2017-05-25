@@ -1945,6 +1945,8 @@ int xc_mem_paging_resume(xc_interface *xch, domid_t domain_id);
 int xc_mem_paging_nominate(xc_interface *xch, domid_t domain_id,
                            uint64_t gfn);
 int xc_mem_paging_evict(xc_interface *xch, domid_t domain_id, uint64_t gfn);
+int xc_mem_paging_populate_evicted(xc_interface *xch, domid_t domain_id,
+                                   xen_pfn_t *gfns, uint32_t nr);
 int xc_mem_paging_prep(xc_interface *xch, domid_t domain_id, uint64_t gfn);
 int xc_mem_paging_load(xc_interface *xch, domid_t domain_id,
                        uint64_t gfn, void *buffer);
