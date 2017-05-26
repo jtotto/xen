@@ -672,13 +672,15 @@ static int process_postcopy_pfns(struct xc_sr_context *ctx, unsigned int count,
     xc_interface *xch = ctx->xch;
     struct xc_sr_restore_paging *paging = &ctx->restore.paging;
     int rc;
-    unsigned int i;
+    unsigned int i, nr_bpfns = 0, nr_xapfns = 0;
     xen_pfn_t bpfn;
+    xen_pfn_t *bpfns = malloc(count * sizeof(*bpfns)),
+              *xapfns = malloc(count * sizeof(*xapfns));
 
-    rc = populate_pfns(ctx, count, pfns, types);
-    if ( rc )
+    if ( !bpfns || !xapfns )
     {
-        ERROR("Failed to populate pfns for batch of %u pages", count);
+        rc = -1;
+        ERROR("Failed to allocate %zu bytes pfns", 2 * count * sizeof(*bpfns));
         goto out;
     }
 
@@ -686,7 +688,7 @@ static int process_postcopy_pfns(struct xc_sr_context *ctx, unsigned int count,
     {
         if ( types[i] < XEN_DOMCTL_PFINFO_BROKEN )
         {
-            bpfn = pfns[i];
+            bpfn = bpfns[nr_bpfns++] = pfns[i];
 
             /* We should never see the same pfn twice at this stage.  */
             if ( !postcopy_pfn_invalid(ctx, bpfn) )
@@ -695,6 +697,42 @@ static int process_postcopy_pfns(struct xc_sr_context *ctx, unsigned int count,
                 ERROR("Duplicate postcopy pfn %"PRI_xen_pfn, bpfn);
                 goto out;
             }
+        }
+        else if ( types[i] == XEN_DOMCTL_PFINFO_XALLOC )
+        {
+            xapfns[nr_xapfns++] = pfns[i];
+        }
+    }
+
+    /* Follow the normal path to populate XALLOC pfns... */
+    rc = populate_pfns(ctx, nr_xapfns, xapfns, NULL);
+    if ( rc )
+    {
+        ERROR("Failed to populate pfns for batch of %u pages", nr_xapfns);
+        goto out;
+    }
+
+    /* ... and 'populate' the backed pfns directly into the evicted state. */
+    if ( nr_bpfns )
+    {
+        rc = xc_mem_paging_populate_evicted(xch, ctx->domid, bpfns, nr_bpfns);
+        if ( rc )
+        {
+            ERROR("Failed to evict batch of %u pfns", nr_bpfns);
+            goto out;
+        }
+
+        for ( i = 0; i < nr_bpfns; ++i )
+        {
+            bpfn = bpfns[i];
+
+            /* If it hasn't yet been populated, mark it as so now. */
+            if ( !pfn_is_populated(ctx, bpfn) )
+            {
+                rc = pfn_set_populated(ctx, bpfn);
+                if ( rc )
+                    goto out;
+            }
 
             /*
              * We now consider this pfn 'outstanding' - pending, and not yet
@@ -702,32 +740,15 @@ static int process_postcopy_pfns(struct xc_sr_context *ctx, unsigned int count,
              */
             mark_postcopy_pfn_outstanding(ctx, bpfn);
             ++paging->nr_pending_pfns;
-
-            /*
-             * Neither nomination nor eviction can be permitted to fail - the
-             * guest isn't yet running, so a failure would imply a foreign or
-             * hypervisor mapping on the page, and that would be bogus because
-             * the migration isn't yet complete.
-             */
-            rc = xc_mem_paging_nominate(xch, ctx->domid, bpfn);
-            if ( rc < 0 )
-            {
-                PERROR("Error nominating postcopy pfn %"PRI_xen_pfn, bpfn);
-                goto out;
-            }
-
-            rc = xc_mem_paging_evict(xch, ctx->domid, bpfn);
-            if ( rc < 0 )
-            {
-                PERROR("Error evicting postcopy pfn %"PRI_xen_pfn, bpfn);
-                goto out;
-            }
         }
     }
 
     rc = 0;
 
  out:
+    free(bpfns);
+    free(xapfns);
+
     return rc;
 }
 
