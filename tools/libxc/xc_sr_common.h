@@ -261,6 +261,9 @@ struct xc_sr_context
                     /* As from vm_event_request_t */
                     uint32_t flags;
                     uint32_t vcpu_id;
+
+                    /* XXX TIMING */
+                    double start;
                 } *pending_requests;
 
                 /*
@@ -325,6 +328,13 @@ struct xc_sr_context
                  */
                 bool ready;
             } paging;
+
+            time_t period_start;
+            size_t faults_serviced;
+            double total_service;
+            double min_service;
+            double max_service;
+
 
             /* Plain VM, or checkpoints over time. */
             int checkpointed;

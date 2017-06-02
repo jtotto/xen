@@ -16,8 +16,13 @@ static struct timespec migration_postcopy_complete;
     clock_gettime(CLOCK_MONOTONIC, &name ## ts);                    \
     IPRINTF("MIGRATION POSTCOPY " #name " %f",                      \
             (double)name ## ts.tv_sec +                             \
-            (double)name ## ts.tv_nsec * (1.0/1000000000.0));       \
+            (double)name ## ts.tv_nsec / (1000000000.0));           \
 } while (0)
+
+static inline double ts_to_double(struct timespec *ts)
+{
+    return (double)(ts->tv_sec) + (((double)ts->tv_nsec) / 1000000000.0);
+}
 
 /*
  * Read and validate the Image and Domain headers.
@@ -877,8 +882,34 @@ static int postcopy_load_page(struct xc_sr_context *ctx, xen_pfn_t pfn,
 
     if ( postcopy_pfn_requested(ctx, pfn) )
     {
+        double end_time;
+        struct timespec end;
+        clock_gettime(CLOCK_MONOTONIC, &end);
+        end_time = ts_to_double(&end);
+
+        if ( end.tv_sec > ctx->restore.period_start )
+        {
+            if ( ctx->restore.period_start )
+            {
+                IPRINTF("POSTCOPY FAULT STATS %ld %zu %f %f %f",
+                        ctx->restore.period_start,
+                        ctx->restore.faults_serviced,
+                        ctx->restore.total_service,
+                        ctx->restore.min_service,
+                        ctx->restore.max_service);
+            }
+
+            ctx->restore.period_start = end.tv_sec;
+            ctx->restore.faults_serviced = 0;
+            ctx->restore.total_service = 0.0;
+            ctx->restore.min_service = 0.0;
+            ctx->restore.max_service = 0.0;
+        }
+
         for ( i = 0; i < RING_SIZE(back_ring); ++i )
         {
+            double difference;
+
             preq = &paging->pending_requests[i];
             if ( preq->pfn != pfn )
                 continue;
@@ -899,6 +930,25 @@ static int postcopy_load_page(struct xc_sr_context *ctx, xen_pfn_t pfn,
 
             /* And free the pending request slot. */
             preq->pfn = INVALID_PFN;
+
+            /* XXX TIMING */
+            difference = end_time - preq->start;
+            if ( ctx->restore.faults_serviced == 0 )
+            {
+                ctx->restore.min_service = difference;
+                ctx->restore.max_service = difference;
+            }
+            else if ( difference < ctx->restore.min_service )
+            {
+                ctx->restore.min_service = difference;
+            }
+            else if ( difference > ctx->restore.max_service )
+            {
+                ctx->restore.max_service = difference;
+            }
+
+            ctx->restore.total_service += difference;
+            ctx->restore.faults_serviced++;
         }
     }
 
@@ -1137,11 +1187,16 @@ static int handle_postcopy_paging_requests(struct xc_sr_context *ctx)
                 preq = &paging->pending_requests[i];
                 if ( preq->pfn == INVALID_PFN )
                 {
+                    struct timespec start_request;
+
                     /* Claim this slot. */
                     preq->pfn = pfn;
 
                     preq->flags = req.flags;
                     preq->vcpu_id = req.vcpu_id;
+
+                    clock_gettime(CLOCK_MONOTONIC, &start_request);
+                    preq->start = ts_to_double(&start_request);
                     break;
                 }
             }
@@ -1315,6 +1370,16 @@ static int postcopy_restore(struct xc_sr_context *ctx)
     rc = write_postcopy_complete_record(ctx);
     if ( rc )
         goto err;
+
+    if ( ctx->restore.period_start )
+    {
+        IPRINTF("POSTCOPY FAULT STATS %ld %zu %f %f %f",
+                ctx->restore.period_start,
+                ctx->restore.faults_serviced,
+                ctx->restore.total_service,
+                ctx->restore.min_service,
+                ctx->restore.max_service);
+    }
 
     /*
      * End-of-stream synchronization: make the receive stream blocking again,
@@ -1761,6 +1826,7 @@ static int restore(struct xc_sr_context *ctx)
 
         goto done;
     }
+#if 0
     else
     {
         struct timespec migration_normal_resume;
@@ -1769,6 +1835,7 @@ static int restore(struct xc_sr_context *ctx)
 				(double)migration_normal_resume.tv_sec +
 				(double)migration_normal_resume.tv_nsec * (1.0/1000000000.0));
     }
+#endif
 
     /*
      * With Remus, if we reach here, there must be some error on primary,
