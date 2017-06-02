@@ -8,7 +8,7 @@
     clock_gettime(CLOCK_MONOTONIC, &name ## ts);                    \
     IPRINTF("MIGRATION POSTCOPY " #name " %f",                      \
             (double)name ## ts.tv_sec +                             \
-            (double)name ## ts.tv_nsec * (1.0/1000000000.0));       \
+            (double)name ## ts.tv_nsec / (1000000000.0));           \
 } while (0)
 
 #define MAX_BATCH_SIZE \
@@ -685,6 +685,16 @@ static int send_dirty_pages(struct xc_sr_context *ctx,
 
     if ( written > entries )
         DPRINTF("Bitmap contained more entries than expected...");
+
+    if ( ctx->save.phase == XC_SAVE_PHASE_PRECOPY )
+    {
+        IPRINTF("Precopy iteration %d wrote %lu pages",
+                ctx->save.stats.iteration, written);
+    }
+    else if ( ctx->save.phase == XC_SAVE_PHASE_STOP_AND_COPY )
+    {
+        IPRINTF("Stop-and-copy wrote %lu pages", written);
+    }
 
     xc_report_progress_step(xch, entries, entries);
 
@@ -1433,6 +1443,9 @@ static int save(struct xc_sr_context *ctx, uint16_t guest_type)
             rc = send_postcopy_pfns(ctx);
             if ( rc )
                 goto err;
+
+            IPRINTF("Postcopy nr_final_dirty_pages %lu",
+                    ctx->save.nr_final_dirty_pages);
 
             rc = write_postcopy_transition_record(ctx);
             if ( rc )
